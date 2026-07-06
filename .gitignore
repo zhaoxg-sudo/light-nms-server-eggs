@@ -1,4 +1,4 @@
-logs/
+it add .logs/
 npm-debug.log
 yarn-error.log
 package-lock.json
@@ -9,4 +9,3 @@ run/
 .DS_Store
 *.sw*
 *.un~
-node_modules
