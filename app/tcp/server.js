@@ -6,7 +6,7 @@ function autoParse(buf) {
   if (!str.startsWith('$G')) return null;
   try {
     const arr = str.split(',');
-    const status = arr[2] === 'A' ? '有效定位' : '无定位';
+    const status = arr[2] === 'A' ? '有效定位' : '无效定位';
     function convert(val, dir) {
       if (!val) return null;
       const deg = Math.floor(val / 100);
@@ -28,6 +28,37 @@ module.exports = app => {
   app.deviceMap = new Map();
   app.ipBindSn = new Map();
   app.tcpCleanTimer = null;
+
+  //【新增】应答超时管理器
+  app.waitReplyMap = new Map();
+  const REPLY_TIMEOUT = 5000;
+
+  //【新增】创建等待应答Promise任务
+  app.createWaitReplyTask = function (msgId, target) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        app.waitReplyMap.delete(msgId);
+        reject({ success: false, msg: '指令下发成功，设备应答超时' });
+      }, REPLY_TIMEOUT);
+      app.waitReplyMap.set(msgId, { resolve, reject, timer, target });
+    });
+  };
+
+  //【新增】设备应答回执，匹配msgId完成等待任务
+  app.handleDeviceReply = function (msgId, replyData) {
+    if (!app.waitReplyMap.has(msgId)) return;
+    const task = app.waitReplyMap.get(msgId);
+    clearTimeout(task.timer);
+    app.waitReplyMap.delete(msgId);
+    task.resolve({ success: true, msg: '设备应答成功', data: replyData });
+  };
+
+  //【新增】兜底清理滞留应答任务
+  setInterval(() => {
+    for (const [mid, task] of app.waitReplyMap.entries()) {
+      if (!task.timer) app.waitReplyMap.delete(mid);
+    }
+  }, 60000);
 
   // 下发工具函数
   app.sendTcpCmd = function (payload, target) {
@@ -155,12 +186,14 @@ module.exports = app => {
         if (raw.startsWith('$G')) {
           clientMeta.type = 'gps';
           const gpsInfo = autoParse(buffer);
+          
           if (!gpsInfo) return;
           if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
             const dev = app.deviceMap.get(clientMeta.sn);
             dev.gpsChannel = clientKey;
             dev.lastGpsHeart = Date.now(); // 独立GPS心跳时间
           }
+          app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
           if (app.io && app.io.of('/')) {
             app.io.of('/').emit('gps', {
               sn: clientMeta.sn,
@@ -179,6 +212,12 @@ module.exports = app => {
         if (raw.startsWith('{')) {
           clientMeta.type = 'business';
           const data = JSON.parse(raw);
+
+          //【新增】匹配应答msgId，触发等待任务resolve
+          if (data.msgId) {
+            app.handleDeviceReply(data.msgId, data);
+          }
+
           if (data.id) {
             clientMeta.cid = data.id;
             if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
@@ -249,7 +288,7 @@ module.exports = app => {
     app.tcpCleanTimer = setInterval(() => {
       const now = Date.now();
       const expire = now - 3 * 60 * 1000;
-      app.logger.info('======开始定时校验设备离线状态=======');
+      app.logger.info('======开始60s定时校验设备离线状态=======');
       // ======================【新增3】定时主动清理已销毁残留socket ======================
       for (const [ck, meta] of app.tcpClients.entries()) {
         if (meta.socket.destroyed) {
@@ -284,5 +323,10 @@ module.exports = app => {
 
   process.on('beforeExit', () => {
     if (app.tcpCleanTimer) clearInterval(app.tcpCleanTimer);
+    //【新增】进程退出清空所有应答等待定时器
+    for (const task of app.waitReplyMap.values()) {
+      clearTimeout(task.timer);
+    }
+    app.waitReplyMap.clear();
   });
 };
