@@ -31,7 +31,7 @@ module.exports = app => {
 
   //【新增】应答超时管理器
   app.waitReplyMap = new Map();
-  const REPLY_TIMEOUT = 5000;
+  const REPLY_TIMEOUT = 3000;
 
   //【新增】创建等待应答Promise任务
   app.createWaitReplyTask = function (msgId, target) {
