@@ -73,10 +73,10 @@ class HomeController extends Controller {
     let ipaddress = this.ctx.request.body.ipaddress
     let ipport = this.ctx.request.body.ipport
     let childrennum = this.ctx.request.body.childrennum
-    let gpslng = this.ctx.request.body.gpslng
-    let gpslat = this.ctx.request.body.gpslat
-    let gcjlng = this.ctx.request.body.gcjlng
-    let gcjlat = this.ctx.request.body.gcjlat
+    let gpslng = this.ctx.request.body.gpslng || '116.19545'
+    let gpslat = this.ctx.request.body.gpslat || '40.025408'
+    let gcjlng = this.ctx.request.body.gcjlng || ''
+    let gcjlat = this.ctx.request.body.gcjlat || ''
 
     console.log("catalogid=", catalogid)
     let data = {}
