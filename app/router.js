@@ -14,6 +14,8 @@ module.exports = app => {
   }
   router.get('/', controller.home.index);
   router.get('/localall', controller.home.index);
+  router.post('/localrelative', controller.home.relative);
+  router.post('/downidlist', controller.home.downidlist);
   router.get('/childrenall/:catalogid', controller.home.childrenall);
   router.get('/user/userall', controller.user.userall);
   router.get('/user/:orgid', controller.user.userbyorgid);

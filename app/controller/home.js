@@ -28,6 +28,108 @@ class HomeController extends Controller {
     //ctx.body = 'hi, egg';
     ctx.body = data.rows
   }
+  // get relative node ,includes up an down node
+  async relative() {
+    //connect db
+    const client = new Client({
+      user: 'postgres',
+      host: '127.0.0.1',
+      database: 'power',
+      password: 'shyh2017',
+      port: 5432,
+    })
+    // the pool with emit an error on behalf of any idle clients
+    // it contains if a backend error or network partition happens
+    console.log("enter relative router", this.ctx.request.body)
+      client.connect()
+      let userorg = this.ctx.request.body.userorg
+      let usertype = this.ctx.request.body.usertype
+      console.log('relative received=:', userorg, usertype)
+      let data
+      if (usertype == '-1') {
+        data = await client.query('SELECT * from power_station_tree')
+      } else {
+        console.log('relative node', userorg)
+        /**
+         * 获取节点向上+向下全部关联节点，仅用于面包屑导航
+         * @param {string} userorg
+         * @returns {Array}
+         */
+         const sql = `
+         WITH RECURSIVE down_tree AS (
+             SELECT * FROM power_station_tree WHERE catalogid = $1
+             UNION ALL
+             SELECT t.*
+             FROM power_station_tree t
+             INNER JOIN down_tree tr ON t.parentid = tr.catalogid
+         ),
+         up_tree AS (
+             SELECT * FROM power_station_tree WHERE catalogid = $1
+             UNION ALL
+             SELECT p.*
+             FROM power_station_tree p
+             INNER JOIN up_tree child ON p.catalogid = child.parentid
+         )
+         SELECT DISTINCT * FROM down_tree
+         UNION
+         SELECT DISTINCT * FROM up_tree;
+        `;
+        data = await client.query(sql, [ userorg ])
+      }
+      
+      client.end()
+    //end db
+    
+    const { ctx } = this;
+    //ctx.body = 'hi, egg';
+    ctx.body = data.rows
+  }
+  // get relative node ,includes up an down node
+  async downidlist() {
+    //connect db
+    const client = new Client({
+      user: 'postgres',
+      host: '127.0.0.1',
+      database: 'power',
+      password: 'shyh2017',
+      port: 5432,
+    })
+    // the pool with emit an error on behalf of any idle clients
+    // it contains if a backend error or network partition happens
+    console.log("enter downidlist router", this.ctx.request.body)
+      client.connect()
+      let userorg = this.ctx.request.body.userorg
+      let usertype = this.ctx.request.body.usertype
+      console.log('relative received=:', userorg, usertype)
+      let data
+      if (usertype == '-1') {
+        data = await client.query('SELECT * from power_station_tree')
+      } else {
+        console.log('downidlist node', userorg)
+        /**
+         * 获取节点向上+向下全部关联节点，仅用于面包屑导航
+         * @param {string} userorg
+         * @returns {Array}
+         */
+         const sql = `
+        WITH RECURSIVE down_tree AS (
+            SELECT catalogid FROM power_station_tree WHERE catalogid = $1
+            UNION ALL
+            SELECT t.catalogid
+            FROM power_station_tree t
+            INNER JOIN down_tree tr ON t.parentid = tr.catalogid
+        )
+        SELECT DISTINCT catalogid FROM down_tree;
+        `
+        data = await client.query(sql, [ userorg ])
+      }
+      
+      client.end()
+    //end db
+    
+    const { ctx } = this;
+    ctx.body = data.rows
+  }
   // get all children of this node
   async childrenall() {
     //connect db

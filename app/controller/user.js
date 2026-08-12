@@ -44,6 +44,7 @@ class HomeController extends Controller {
     console.log("enter userlogin router", this.ctx.request.body)
       let userid = this.ctx.request.body.account
       let password = this.ctx.request.body.password
+      // let orgtype = this.ctx.request.body.orgtype
       let data = {}
       data.result = {}
       client.connect()
@@ -118,8 +119,10 @@ class HomeController extends Controller {
     let password = formData.password
     let usertype = formData.type
     let userorg = formData.userOrg
+    let orgtype = formData.orgtype
+    let fullname = formData.fullname
     let userpowered = formData.loginId
-    let userright = ''
+    let userright = formData.userright
     let userphoto = ''
     let useradd = ''
     let createdat = ''
@@ -147,7 +150,7 @@ class HomeController extends Controller {
       data.code = 0
       data.result ="用户已存在，userid =" + userid
     } else {
-      await client.query('INSERT INTO power_user (userid,username,password,usertype,userorg,userpowered,userright,userphoto,useradd,createdat,updatedat,disabled,sortindex) VALUES (' + 
+      await client.query('INSERT INTO power_user (userid,username,password,usertype,userorg,userpowered,userright,userphoto,useradd,createdat,updatedat,disabled,orgtype,fullname,sortindex) VALUES (' + 
             "'" + userid + "'" + ","+
             "'" + username +"'"+","+
             "'" + password +"'"+","+
@@ -160,10 +163,12 @@ class HomeController extends Controller {
             "'" + createdat +"'"+","+
             "'" + updatedat +"'"+","+
             "'" + disabled +"'"+","+
+            "'" + orgtype +"'"+","+
+            "'" + fullname +"'"+","+
             "'" + sortindex +"')")
             console.log('数据库中没有该用户，添加用户成功！！！！，新增节点的userid =', userid)
       data.code = 1
-      data.result = {userid:userid, username:username, password:password, userorg:userorg, userpowered:userpowered, userright:userright, userphoto:userphoto, useradd:useradd, createdat:createdat, updatedat:updatedat, disabled:disabled, sortindex:sortindex}
+      data.result = {userid:userid, username:username, password:password, userorg:userorg, userpowered:userpowered, userright:userright, userphoto:userphoto, useradd:useradd, createdat:createdat, updatedat:updatedat, disabled:disabled, orgtype:orgtype, fullname:fullname, sortindex:sortindex}
     }
     client.end()
     this.ctx.body = data
