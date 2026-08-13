@@ -100,7 +100,7 @@ class HomeController extends Controller {
       client.connect()
       let userorg = this.ctx.request.body.userorg
       let usertype = this.ctx.request.body.usertype
-      console.log('relative received=:', userorg, usertype)
+      console.log('downidlist received=:', userorg, usertype)
       let data
       if (usertype == '-1') {
         data = await client.query('SELECT * from power_station_tree')
@@ -126,7 +126,7 @@ class HomeController extends Controller {
       
       client.end()
     //end db
-    
+    console.log('downidlist res', data.rows)
     const { ctx } = this;
     ctx.body = data.rows
   }
