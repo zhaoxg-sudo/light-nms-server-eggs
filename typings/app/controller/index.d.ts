@@ -10,6 +10,7 @@ import ExportDevicebox = require('../../../app/controller/devicebox');
 import ExportDeviceclsd = require('../../../app/controller/deviceclsd');
 import ExportDevicelocal = require('../../../app/controller/devicelocal');
 import ExportHome = require('../../../app/controller/home');
+import ExportLog = require('../../../app/controller/log');
 import ExportTcp = require('../../../app/controller/tcp');
 import ExportTopo = require('../../../app/controller/topo');
 import ExportUser = require('../../../app/controller/user');
@@ -24,6 +25,7 @@ declare module 'egg' {
     deviceclsd: ExportDeviceclsd;
     devicelocal: ExportDevicelocal;
     home: ExportHome;
+    log: ExportLog;
     tcp: ExportTcp;
     topo: ExportTopo;
     user: ExportUser;

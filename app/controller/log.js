@@ -2,10 +2,9 @@
 
 const Controller = require('egg').Controller;
 const { Pool, Client } = require('pg')
-const pool = require('../pgpool');
-const { getCleanClientIp } = require('../pgpool/iphelper');
 
-class HomeController extends Controller {
+
+class LogController extends Controller {
   // get all users
   async userall() {
     //connect db
@@ -30,55 +29,6 @@ class HomeController extends Controller {
     ctx.body = data.rows
   }
   
-  // user login 
-  async userlogin() {
-      console.log("enter userlogin router", this.ctx.request.body)
-      let userid = this.ctx.request.body.account
-      let password = this.ctx.request.body.password
-      // let orgtype = this.ctx.request.body.orgtype
-      // 优先取代理转发头
-      let req = this.ctx.request
-    
-      let clientip = ''
-      clientip = getCleanClientIp(req)
-      console.log('client ip of login  =', clientip)
-
-      let data = {}
-      data.result = {}
-      let  result = await pool.query("SELECT * from power_user where username =" + "'" + userid + "'" + " and password = " + "'" + password + "'")
-      if (result.rows.length > 0) {
-        console.log('用户名/密码正确,username =', userid)
-        data.code = 1
-        data.result = result.rows
-        // 写入日志
-      let logItem = {}
-      logItem.user_id = userid || '',
-      logItem.user_name = userid || '',
-      logItem.user_org = '',
-      logItem.oper_type = 'login'|| '',
-      logItem.oper_desc = '用户名：' + userid + '登录',
-      logItem.request_url =  '',
-      logItem.request_method1 =  '',
-      logItem.request_params = '',
-      logItem.ip = '',
-      logItem.status = 1,
-      logItem.error_msg ='',
-      logItem.cost_time = 0,
-      logItem.create_at = new Date(),
-      logItem.local_inner_ips = clientip || ''
-      let sid
-      sid = await this.ctx.service.log.insertLog(logItem);
-      console.log('login日志写入 =', sid.rowCount)
-      } else {
-          data.code = 0
-          console.log('用户名/密码错误？？？？,login =', userid + password)
-      }
-    
-    const { ctx } = this;
-    
-    ctx.body = data
-  }
-  // end user login
   // get user by orgid
   async userbyorgid() {
     // connect db
@@ -114,8 +64,8 @@ class HomeController extends Controller {
     ctx.body = data
   }
   // end get user by orgid
-  // create user
-  async useradd() {
+  // add log
+  async logadd() {
     //connect db
     const client = new Client({
       user: 'postgres',
@@ -124,18 +74,18 @@ class HomeController extends Controller {
       password: 'shyh2017',
       port: 5432,
     })
-    console.log("enter useradd router", this.ctx.request.body)
+    console.log("enter logadd router", this.ctx.request.body)
     client.connect()
-    let formData = this.ctx.request.body
-    let userid = formData.userId
-    let username = formData.userName
-    let password = formData.password
-    let usertype = formData.type
-    let userorg = formData.userOrg
-    let orgtype = formData.orgtype
-    let fullname = formData.fullname
-    let userpowered = formData.loginId
-    let userright = formData.userright
+    let logData = this.ctx.request.body
+    let userid = logData.userId
+    let username = logData.userName
+    let password = logData.password
+    let usertype = logData.type
+    let userorg = logData.userOrg
+    let orgtype = logData.orgtype
+    let fullname = logData.fullname
+    let userpowered = logData.loginId
+    let userright = logData.userright
     let userphoto = ''
     let useradd = ''
     let createdat = ''
@@ -186,8 +136,8 @@ class HomeController extends Controller {
     client.end()
     this.ctx.body = data
   }
-  // update user
-  async useredit() {
+  // update log
+  async logedit() {
     //connect db
     const client = new Client({
       user: 'postgres',
@@ -218,8 +168,8 @@ class HomeController extends Controller {
     client.end()
     this.ctx.body = data
   }
-  // del user
-  async userdel() {
+  // del log
+  async logdel() {
     //connect db
     const client = new Client({
       user: 'postgres',
@@ -250,4 +200,4 @@ class HomeController extends Controller {
   }
 }
 
-module.exports = HomeController;
+module.exports = LogController;
