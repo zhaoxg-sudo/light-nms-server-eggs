@@ -23,6 +23,7 @@ module.exports = app => {
   router.post('/user/useradd', controller.user.useradd);
   router.post('/user/userdel', controller.user.userdel);
   router.post('/user/useredit', controller.user.useredit);
+  router.get('/log/list', controller.log.list);
   router.get('/default/get/:catalogid', controller.default.defaultget);
   router.post('/default/update', controller.default.defaultupdate);
   router.get('/getallcurrentalarm', controller.alarm.getallcurrentalarm);

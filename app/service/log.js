@@ -3,8 +3,18 @@
 const { Service } = require('egg');
 const pool = require('../pgpool');
 
+// 格式化函数 返回 YYYY-MM-DD HH:mm:ss
+function formatDateTime(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${h}:${m}:${s}`;
+}
 class SysOperLogService extends Service {
-
   /**
    * 写入操作日志
    * @param {Object} logItem
@@ -41,7 +51,7 @@ INSERT INTO sys_oper_log (
       logItem.status !== undefined ? logItem.status : 1,
       logItem.error_msg || '',
       logItem.cost_time || 0,
-      new Date(),
+      formatDateTime(new Date()), // 格式化：YYYY-MM-DD HH:mm:ss
       logItem.local_inner_ips || ''
     ];
 
@@ -54,8 +64,10 @@ INSERT INTO sys_oper_log (
    * @param {Object} query
    * @returns {{total:number, list:Array}}
    */
-  async getPageList(query) {
-    const { page = 1, pageSize = 10, user_name, oper_type } = query;
+   async getPageList(query) {
+    // 兼容前端 pageNum，没有则取page
+    const { pageNum, pageSize = 10, user_name, user_org, startTime, endTime, oper_type } = query;
+    const page = pageNum || query.page || 1;
 
     let whereParts = [];
     const params = [];
@@ -64,31 +76,62 @@ INSERT INTO sys_oper_log (
     if (user_name) {
       whereParts.push(`user_name LIKE $${idx}`);
       params.push('%' + user_name + '%');
-      idx = idx + 1;
+      idx++;
+    }
+    // 新增 用户组织模糊查询
+    if (user_org) {
+      whereParts.push(`user_org LIKE $${idx}`);
+      params.push('%' + user_org + '%');
+      idx++;
     }
     if (oper_type) {
       whereParts.push(`oper_type = $${idx}`);
       params.push(oper_type);
-      idx = idx + 1;
+      idx++;
+    }
+    // 新增 操作时间范围 create_at
+    if (startTime) {
+      whereParts.push(`create_at >= $${idx}`);
+      params.push(startTime);
+      idx++;
+    }
+    if (endTime) {
+      whereParts.push(`create_at <= $${idx}`);
+      params.push(endTime);
+      idx++;
     }
 
     const whereSql = whereParts.length > 0 ? 'WHERE ' + whereParts.join(' AND ') : '';
-
     const countSql = `SELECT COUNT(id) AS total FROM sys_oper_log ${whereSql}`;
+    console.log("enter getPageList router", countSql, params)
     const countRes = await pool.query(countSql, params);
     const total = Number(countRes.rows[0].total);
-
     const offset = (page - 1) * pageSize;
+
     const listSql = `
-SELECT * FROM sys_oper_log
+SELECT 
+  id,
+  user_id,
+  user_name,
+  user_org,
+  oper_type,
+  oper_desc,
+  request_url,
+  ip,
+  status,
+  error_msg,
+  cost_time,
+  create_at AS oper_time,
+  local_inner_ips
+FROM sys_oper_log
 ${whereSql}
 ORDER BY create_at DESC
 LIMIT $${idx} OFFSET $${idx+1}
 `;
     params.push(pageSize);
     params.push(offset);
-
     const listRes = await pool.query(listSql, params);
+
     return {
       total: total,
       list: listRes.rows

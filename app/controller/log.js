@@ -5,65 +5,6 @@ const { Pool, Client } = require('pg')
 
 
 class LogController extends Controller {
-  // get all users
-  async userall() {
-    //connect db
-    const client = new Client({
-      user: 'postgres',
-      host: '127.0.0.1',
-      database: 'power',
-      password: 'shyh2017',
-      port: 5432,
-    })
-    // the pool with emit an error on behalf of any idle clients
-    // it contains if a backend error or network partition happens
-      client.connect()
-         
-      let  data = await client.query('SELECT * from power_user')
-      
-      client.end()
-    //end db
-    
-    const { ctx } = this;
-    //ctx.body = 'hi, egg';
-    ctx.body = data.rows
-  }
-  
-  // get user by orgid
-  async userbyorgid() {
-    // connect db
-    const client = new Client({
-      user: 'postgres',
-      host: '127.0.0.1',
-      database: 'power',
-      password: 'shyh2017',
-      port: 5432,
-    })
-    // the pool with emit an error on behalf of any idle clients
-    // it contains if a backend error or network partition happens
-    console.log("enter userbyorgid router", this.ctx.params.orgid)
-      let userorg = this.ctx.params.orgid
-      let data = {}
-      data.result = {}
-      client.connect()
-      
-      let  result = await client.query("SELECT * from power_user where userorg =" + "'" + userorg + "'" )   
-      if (result.rows.length > 0) {
-        console.log('userbyorgid：获取到该组织的所有用户,orgid =', userorg)
-        data.code = 1
-        data.result = result.rows
-      } else {
-          data.code = 0
-          console.log('userbyorgid：没有记录？？？？,orgid =', userorg)
-      }
-      client.end()
-    // end db
-    
-    const { ctx } = this;
-    
-    ctx.body = data
-  }
-  // end get user by orgid
   // add log
   async logadd() {
     //connect db
@@ -135,6 +76,25 @@ class LogController extends Controller {
     }
     client.end()
     this.ctx.body = data
+  }
+  /**
+   * 分页查询操作日志
+   */
+   async list() {
+    const { ctx } = this;
+    // GET 参数接收前端传的 pageNum,pageSize,user_name,user_org,startTime,endTime
+    const query = ctx.query;
+    console.log("enter loglist router", query)
+    // 调用service获取分页数据
+    const result = await ctx.service.log.getPageList(query);
+    // 返回结构和前端operLogPanel.vue适配 records + total
+    ctx.body = {
+      code: 200,
+      data: {
+        records: result.list,
+        total: result.total
+      }
+    };
   }
   // update log
   async logedit() {
