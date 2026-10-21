@@ -3,7 +3,8 @@ const { Service } = require('egg')
 
 // 生成唯一消息ID
 function genMsgId() {
-  return Date.now().toString() + '_' + Math.floor(Math.random() * 10000);
+  return Math.floor(Math.random() * 10000);
+//   return Date.now().toString() + '_' + Math.floor(Math.random() * 10000);
 }
 
 class TcpService extends Service {
@@ -139,19 +140,48 @@ class TcpService extends Service {
     }
   }
 
-  getOnlineList() {
-    const list = []
-    for (const [clientKey, meta] of this.app.tcpClients.entries()) {
-      list.push({
-        clientKey,
-        publicIp: meta.publicIp,
-        sn: meta.sn,
-        cid: meta.cid,
-        type: meta.type,
-      })
-    }
-    return list
+  /**
+ * getTcpClientList：链路层TCP连接列表
+ * 只要TCP连接还在tcpClients中就返回，不判断业务心跳
+ */
+getTcpClientList () {
+  const list = []
+  for (const [clientKey, meta] of this.app.tcpClients.entries()) {
+    list.push({
+      clientKey,
+      publicIp: meta.publicIp,
+      sn: meta.sn,
+      cid: meta.cid,
+      type: meta.type,
+    })
   }
+  return list
+}
+
+/**
+ * getDeviceList：获取全部设备（在线+离线，来自deviceMap）
+ * 不再过滤status，全部返回
+ */
+ getDeviceList () {
+  const list = []
+  for (const [sn, dev] of this.app.deviceMap.entries()) {
+    const clientMeta = this.app.tcpClients.get(dev.businessChannel)
+    let publicIpVal = null
+    if (clientMeta && clientMeta.publicIp) {
+      publicIpVal = clientMeta.publicIp
+    }
+    list.push({
+      sn,
+      cid: dev.cid,
+      clientKey: dev.businessChannel,
+      publicIp: publicIpVal,
+      status: dev.status,
+      lastBusinessHeart: dev.lastBusinessHeart
+    })
+  }
+  return list
+}
+
 }
 
 module.exports = TcpService

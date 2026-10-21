@@ -11,8 +11,13 @@ class TcpController extends Controller {
     this.ctx.body = await this.ctx.service.tcp.send(clientKey, content)
   }
 
-  async online() {
-    const list = this.ctx.service.tcp.getOnlineList()
+  async tcpclient() {
+    const list = await this.ctx.service.tcp.getTcpClientList()
+    this.ctx.body = { success: true, list }
+  }
+
+  async devicelist() {
+    const list = await this.ctx.service.tcp.getDeviceList()
     this.ctx.body = { success: true, list }
   }
 }

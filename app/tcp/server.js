@@ -1,5 +1,4 @@
 const net = require('net');
-
 // GPS NMEA定位解析
 function autoParse(buf) {
   const str = buf.toString().trim();
@@ -22,17 +21,40 @@ function autoParse(buf) {
     return null;
   }
 }
-
 module.exports = app => {
   app.tcpClients = new Map();
   app.deviceMap = new Map();
   app.ipBindSn = new Map();
   app.tcpCleanTimer = null;
-
+  
+  // ✅【原有保留：设备业务状态变更主动推送，仅在online/offline切换时触发】
+  app.emitDeviceStatusChange = function (dev, newStatus) {
+    if (app.io && app.io.of('/')) {
+      app.io.of('/').emit('deviceonoffline', {
+        sn: dev.sn,
+        cid: dev.cid,
+        status: newStatus,
+        time: new Date().toLocaleString()
+      });
+      app.logger.info(`[设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
+    }
+  }
+  // ==========【新增】GPS通道状态推送，格式完全对齐上面 ==========
+  app.emitGpsChannelStatusChange = function (meta, newStatus) {
+    if (app.io && app.io.of('/')) {
+      app.io.of('/').emit('gpschannelonoffline', {
+        sn: meta.sn,
+        cid: meta.cid,
+        status: newStatus,
+        time: new Date().toLocaleString()
+      });
+      app.logger.info(`[GPS通道状态变更] SN:${meta.sn} CID:${meta.cid} -> ${newStatus}`);
+    }
+  }
   //【新增】应答超时管理器
   app.waitReplyMap = new Map();
   const REPLY_TIMEOUT = 3000;
-
+  
   //【新增】创建等待应答Promise任务
   app.createWaitReplyTask = function (msgId, target) {
     return new Promise((resolve, reject) => {
@@ -43,7 +65,7 @@ module.exports = app => {
       app.waitReplyMap.set(msgId, { resolve, reject, timer, target });
     });
   };
-
+  
   //【新增】设备应答回执，匹配msgId完成等待任务
   app.handleDeviceReply = function (msgId, replyData) {
     if (!app.waitReplyMap.has(msgId)) return;
@@ -52,19 +74,49 @@ module.exports = app => {
     app.waitReplyMap.delete(msgId);
     task.resolve({ success: true, msg: '设备应答成功', data: replyData });
   };
-
   //【新增】兜底清理滞留应答任务
   setInterval(() => {
     for (const [mid, task] of app.waitReplyMap.entries()) {
       if (!task.timer) app.waitReplyMap.delete(mid);
     }
   }, 60000);
-
+  // ==========【新增接口函数】==========
+  // 大屏调用 /api/getDeviceList，仅业务设备
+  app.getDeviceList = function () {
+    const list = []
+    for (const [sn, dev] of app.deviceMap.entries()) {
+      const businessMeta = app.tcpClients.get(dev.businessChannel);
+      list.push({
+        sn,
+        cid: dev.cid,
+        clientKey: dev.businessChannel,
+        publicIp: (businessMeta && businessMeta.publicIp) || null,
+        status: dev.status,
+        lastBusinessHeart: dev.lastBusinessHeart
+      })
+    }
+    return list
+  }
+  // GPS独立列表接口（从tcpClients拿gpsStatus）
+  app.getGpsChannelList = function () {
+    const list = []
+    for (const [sn, dev] of app.deviceMap.entries()) {
+      const gpsMeta = app.tcpClients.get(dev.gpsChannel);
+      list.push({
+        sn,
+        cid: dev.cid,
+        clientKey: dev.gpsChannel,
+        publicIp: (gpsMeta && gpsMeta.publicIp) || null,
+        gpsStatus: gpsMeta ? gpsMeta.gpsStatus : 'offline',
+        lastGpsHeart: dev.lastGpsHeart
+      })
+    }
+    return list
+  }
   // 下发工具函数
   app.sendTcpCmd = function (payload, target) {
     const sendStr = JSON.stringify(payload);
     let targetMetaList = [];
-
     if (target.includes(':')) {
       const meta = app.tcpClients.get(target);
       if (meta) targetMetaList.push(meta);
@@ -76,11 +128,9 @@ module.exports = app => {
         }
       }
     }
-
     if (targetMetaList.length === 0) {
       return { success: false, msg: `未找到设备业务通道，目标:${target}` };
     }
-
     let sendCount = 0;
     for (const meta of targetMetaList) {
       if (meta.type !== 'business') {
@@ -104,12 +154,10 @@ module.exports = app => {
         app.logger.error(`[下发失败] ${meta.clientKey} 通道不可写`);
       }
     }
-
     return sendCount > 0
       ? { success: true, msg: `成功下发至${sendCount}条业务通道`, count: sendCount }
       : { success: false, msg: '匹配到通道，但无可用业务连接' };
   };
-
   const server = net.createServer(socket => {
     const clientKey = `${socket.remoteAddress}:${socket.remotePort}`;
     const publicIp = socket.remoteAddress;
@@ -128,10 +176,11 @@ module.exports = app => {
       sn: null,
       cid: null,
       type: null,
+      lastGpsHeart: 0,
+      gpsStatus: 'offline'
     };
     app.tcpClients.set(clientKey, clientMeta);
     app.logger.info(`[TCP] 通道上线 ${clientKey} 公网IP:${publicIp}`);
-
     if (app.ipBindSn.has(publicIp)) {
       const bindSn = app.ipBindSn.get(publicIp);
       clientMeta.sn = bindSn;
@@ -139,7 +188,6 @@ module.exports = app => {
       if (dev?.cid) clientMeta.cid = dev.cid;
       app.logger.info(`[自动绑定] ${clientKey} SN:${bindSn} CID:${clientMeta.cid || '无'}`);
     }
-
     socket.on('data', buffer => {
       try {
         const raw = buffer.toString().trim();
@@ -147,19 +195,17 @@ module.exports = app => {
         // ======================【新增2】收到任意报文重置超时计时器 ======================
         socket.setTimeout(IDLE_TIMEOUT);
         app.logger.info(`[TCP][SN:${clientMeta.sn || '未注册'}][CID:${clientMeta.cid || '无'}] [${clientKey}] 数据：${raw}`);
-
         if (raw === 'www.usr.cn') return;
-
         // 1、DTU注册SN
         if (/^[0-9]{18,}$/.test(raw)) {
           const devSn = raw;
           clientMeta.sn = devSn;
           app.ipBindSn.set(publicIp, devSn);
-
           if (!app.deviceMap.has(devSn)) {
             app.deviceMap.set(devSn, {
               sn: devSn,
               cid: null,
+              status: 'offline',
               gpsChannel: null,
               businessChannel: null,
               lastOnline: Date.now(),
@@ -169,7 +215,6 @@ module.exports = app => {
           }
           const devInfo = app.deviceMap.get(devSn);
           devInfo.lastOnline = Date.now();
-
           for (const [ck, meta] of app.tcpClients.entries()) {
             if (meta.publicIp === publicIp) {
               meta.sn = devSn;
@@ -181,18 +226,24 @@ module.exports = app => {
           app.logger.info(`[设备注册] SN:${devSn} IP:${publicIp}`);
           return;
         }
-
         // 2、GPS报文：只更新GPS独立心跳
         if (raw.startsWith('$G')) {
           clientMeta.type = 'gps';
           const gpsInfo = autoParse(buffer);
           
           if (!gpsInfo) return;
+          clientMeta.lastGpsHeart = Date.now();
           if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
             const dev = app.deviceMap.get(clientMeta.sn);
             dev.gpsChannel = clientKey;
-            dev.lastGpsHeart = Date.now(); // 独立GPS心跳时间
+            dev.lastGpsHeart = Date.now();
           }
+          // GPS通道状态跃迁，状态存在clientMeta
+          if(clientMeta.gpsStatus !== 'online'){
+            clientMeta.gpsStatus = 'online';
+            app.emitGpsChannelStatusChange(clientMeta, 'online');
+          }
+
           app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
           if (app.io && app.io.of('/')) {
             app.io.of('/').emit('gps', {
@@ -207,17 +258,14 @@ module.exports = app => {
           }
           return;
         }
-
         // 3、业务JSON心跳：只更新业务独立心跳
         if (raw.startsWith('{')) {
           clientMeta.type = 'business';
           const data = JSON.parse(raw);
-
           //【新增】匹配应答msgId，触发等待任务resolve
           if (data.msgId) {
             app.handleDeviceReply(data.msgId, data);
           }
-
           if (data.id) {
             clientMeta.cid = data.id;
             if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
@@ -225,6 +273,11 @@ module.exports = app => {
               dev.cid = data.id;
               dev.lastBusinessHeart = Date.now(); // 独立业务心跳
               dev.businessChannel = clientKey;
+              // ✅【修改1：只在状态变化时推送上线】
+              if (dev.status !== 'online') {
+                dev.status = 'online';
+                app.emitDeviceStatusChange(dev, 'online');
+              }
               for (const [ck, meta] of app.tcpClients.entries()) {
                 if (meta.publicIp === publicIp) {
                   meta.cid = data.id;
@@ -243,31 +296,49 @@ module.exports = app => {
           }
           return;
         }
-
         app.logger.warn(`[未知报文] SN:${clientMeta.sn} CID:${clientMeta.cid} ${clientKey} ${raw}`);
       } catch (err) {
         app.logger.error('[TCP数据处理异常]', err);
       }
     });
+    // end 仅打日志，不调用关闭函数
+    socket.on('end', () => {
+      app.logger.info(`[socket end] clientKey:${clientKey} 对端关闭写入`);
+    });
+    // 所有场景统一交给close事件处理，只执行一次
+    socket.on('close', (hadError) => handleSocketClose(clientKey, clientMeta, app));
 
-    socket.on('end', () => handleSocketClose(clientKey, clientMeta, app));
+    // socket.on('end', () => handleSocketClose(clientKey, clientMeta, app));
     socket.on('error', err => {
       app.logger.error(`[通道异常断开] ${clientKey} SN:${clientMeta.sn} CID:${clientMeta.cid}`, err.message);
       handleSocketClose(clientKey, clientMeta, app);
     });
   });
-
   // 通道离线清理
   function handleSocketClose(clientKey, meta, app) {
     app.tcpClients.delete(clientKey);
     const { sn, publicIp, type, cid } = meta;
     app.logger.info(`[通道离线] ${clientKey} SN:${sn || '无'} CID:${cid || '无'} 类型:${type || '未知'}`);
 
+    // GPS通道断开，推送离线事件，状态维护在meta
+    if(type === 'gps' && meta.gpsStatus === 'online'){
+      meta.gpsStatus = 'offline';
+      app.emitGpsChannelStatusChange(meta, 'offline');
+    }
+
     if (sn && app.deviceMap.has(sn)) {
       const dev = app.deviceMap.get(sn);
-      if (type === 'gps' && dev.gpsChannel === clientKey) dev.gpsChannel = null;
-      if (type === 'business' && dev.businessChannel === clientKey) dev.businessChannel = null;
-
+      if (type === 'gps' && dev.gpsChannel === clientKey) {
+        dev.gpsChannel = null;
+      }
+      if (type === 'business' && dev.businessChannel === clientKey) {
+        dev.businessChannel = null;
+        // ✅【修改2：只在状态变化时推送下线】
+        if (dev.status === 'online') {
+          dev.status = 'offline';
+          app.emitDeviceStatusChange(dev, 'offline');
+        }
+      }
       // 双通道全部离线，清除设备缓存
       if (!dev.gpsChannel && !dev.businessChannel) {
         app.deviceMap.delete(sn);
@@ -276,13 +347,11 @@ module.exports = app => {
       }
     }
   }
-
   server.listen(60000, '0.0.0.0');
   server.on('listening', () => {
     app.logger.info('==================================================');
     app.logger.info('✅ TCP服务启动成功 监听端口60000');
     app.logger.info('==================================================');
-
     // 每分钟执行一次离线判断，超时3分钟
     if (app.tcpCleanTimer) clearInterval(app.tcpCleanTimer);
     app.tcpCleanTimer = setInterval(() => {
@@ -296,19 +365,55 @@ module.exports = app => {
           app.logger.warn(`[定时清理残留销毁连接] ${ck}`);
         }
       }
-      // ================================================================================
+    
+      // GPS通道心跳超时检测（只遍历tcpClients）
+      for (const [ck, meta] of app.tcpClients.entries()) {
+        if (meta.type === 'gps') {
+          const gpsExpire = meta.lastGpsHeart < expire;
+          if (gpsExpire) {
+            app.logger.warn(`[GPS通道心跳超时] clientKey:${ck}, SN:${meta.sn}`);
+            if(meta.gpsStatus === 'online'){
+              meta.gpsStatus = 'offline';
+              app.emitGpsChannelStatusChange(meta, 'offline');
+            }
+            meta.socket.destroy();
+          }
+        }
+      }
+    
+      // 业务设备心跳校验（原有逻辑保留）
       const snList = Array.from(app.deviceMap.keys());
       app.logger.info('======snList=====', snList);
       for (const sn of snList) {
         const dev = app.deviceMap.get(sn);
         if (!dev) continue;
-        const gpsExpire = dev.lastGpsHeart < expire;
+    
+        // 业务心跳超时判断
         const busExpire = dev.lastBusinessHeart < expire;
-
-        // 打印单设备双通道状态
-        app.logger.info(`[设备状态校验] SN:${sn} GPS超时:${gpsExpire} 业务超时:${busExpire}`);
-
-        // GPS、业务通道均长期无数据，清理整台设备
+    
+        // GPS超时判断：取dev.gpsChannel对应的tcpMeta
+        let gpsExpire = true;
+        if(dev.gpsChannel && app.tcpClients.has(dev.gpsChannel)){
+          const gpsMeta = app.tcpClients.get(dev.gpsChannel);
+          gpsExpire = gpsMeta.lastGpsHeart < expire;
+        }
+    
+        app.logger.info(`[设备状态校验] SN:${sn} 业务超时:${busExpire}, GPS超时:${gpsExpire}`);
+    
+        // 业务心跳单独超时处理（只改业务状态，不删除设备）
+        if(busExpire){
+          if(dev.status === 'online'){
+            dev.status = 'offline';
+            app.emitDeviceStatusChange(dev, 'offline');
+            app.logger.warn(`[业务心跳超时下线] SN:${sn} 业务超过3分钟无报文`);
+          }
+          if(dev.businessChannel){
+            app.tcpClients.delete(dev.businessChannel);
+            dev.businessChannel = null;
+          }
+        }
+    
+        // =====================【保留需求】GPS、业务通道均长期无数据，清理整台设备 =====================
         if (gpsExpire && busExpire) {
           // 断开残留通道
           if (dev.gpsChannel) app.tcpClients.delete(dev.gpsChannel);
@@ -318,9 +423,8 @@ module.exports = app => {
           app.logger.warn(`[设备整体离线清理] SN:${sn} GPS与业务均超过3分钟无报文`);
         }
       }
-    }, 60000);
+    }, 60000);    
   });
-
   process.on('beforeExit', () => {
     if (app.tcpCleanTimer) clearInterval(app.tcpCleanTimer);
     //【新增】进程退出清空所有应答等待定时器

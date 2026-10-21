@@ -47,14 +47,14 @@ class HomeController extends Controller {
       data.result = {}
       let  result = await pool.query("SELECT * from power_user where username =" + "'" + userid + "'" + " and password = " + "'" + password + "'")
       if (result.rows.length > 0) {
-        console.log('用户名/密码正确,username =', userid)
+        console.log('用户名/密码正确, =', result.rows)
         data.code = 1
         data.result = result.rows
         // 写入日志
       let logItem = {}
       logItem.user_id = userid || '',
       logItem.user_name = userid || '',
-      logItem.user_org = '',
+      logItem.user_org = result.rows[0].fullname,
       logItem.oper_type = 'login'|| '',
       logItem.oper_desc = '用户名：' + userid + '登录',
       logItem.request_url =  '',

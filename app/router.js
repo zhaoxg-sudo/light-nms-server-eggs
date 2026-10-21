@@ -65,6 +65,7 @@ module.exports = app => {
   router.get('/deviceclsd/getparams/:catalogid', controller.deviceclsd.getparamsfromclsd);
   router.get('/deviceclsd/setoutportreboot/:catalogid/:port', controller.deviceclsd.setoutportreboot);
   router.post('/api/tcp/send', controller.tcp.send);
-  router.get('/api/tcp/online', controller.tcp.online);
+  router.get('/api/tcp/client', controller.tcp.tcpclient);
+  router.get('/api/tcp/devicelist', controller.tcp.devicelist);
   app.io.route('client_message',app.io.controller.switch.ping);
 };
