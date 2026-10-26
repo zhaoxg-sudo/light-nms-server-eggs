@@ -20,6 +20,10 @@ class TcpController extends Controller {
     const list = await this.ctx.service.tcp.getDeviceList()
     this.ctx.body = { success: true, list }
   }
+  async gpschannellist() {
+    const list = await this.ctx.service.tcp.getGpsChannelList()
+    this.ctx.body = { success: true, list }
+  }
 }
 
 module.exports = TcpController

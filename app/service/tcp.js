@@ -6,6 +6,24 @@ function genMsgId() {
   return Math.floor(Math.random() * 10000);
 //   return Date.now().toString() + '_' + Math.floor(Math.random() * 10000);
 }
+/**
+ * 判断这个GPS通道是否在线（4G-DTU在线）
+ * @param {Object} clientMeta
+ * @returns {boolean}
+ */
+ function isGpsChannelOnline(clientMeta) {
+  if (!clientMeta) return false;
+  // sn必须绑定成功
+  if (!clientMeta.sn) return false;
+  // socket已经销毁
+  if (clientMeta.socket.destroyed) return false;
+  // 心跳超时判断
+  const now = Date.now();
+  if (now - clientMeta.lastGpsHeart > GPS_EXPIRE_MS) {
+    return false;
+  }
+  return true;
+}
 
 class TcpService extends Service {
   /**
@@ -144,20 +162,36 @@ class TcpService extends Service {
  * getTcpClientList：链路层TCP连接列表
  * 只要TCP连接还在tcpClients中就返回，不判断业务心跳
  */
-getTcpClientList () {
-  const list = []
-  for (const [clientKey, meta] of this.app.tcpClients.entries()) {
-    list.push({
-      clientKey,
-      publicIp: meta.publicIp,
-      sn: meta.sn,
-      cid: meta.cid,
-      type: meta.type,
-    })
+   getTcpClientList () {
+    const list = []
+    for (const [clientKey, meta] of this.app.tcpClients.entries()) {
+      const item = {
+        clientKey,
+        publicIp: meta.publicIp,
+        sn: meta.sn,
+        cid: meta.cid,
+        type: meta.type,
+      }
+      // 仅 type = gps 才追加这三个字段，business通道直接不带
+      if (meta.type === 'gps') {
+        item.lat = typeof meta.lat !== 'undefined' ? meta.lat : null
+        item.lng = typeof meta.lng !== 'undefined' ? meta.lng : null
+        item.gpsValid = typeof meta.gpsValid !== 'undefined' ? meta.gpsValid : false
+      }
+      list.push(item)
+    }
+    return list
   }
-  return list
-}
-
+  
+ /**
+ * getGpsChannelList：链路层GPS连接列表
+ * 
+ */
+  getGpsChannelList () {
+    let list = []
+    list = this.app.getGpsChannelList()
+    return list
+  }
 /**
  * getDeviceList：获取全部设备（在线+离线，来自deviceMap）
  * 不再过滤status，全部返回

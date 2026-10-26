@@ -175,10 +175,11 @@ class HomeController extends Controller {
     let ipaddress = this.ctx.request.body.ipaddress
     let ipport = this.ctx.request.body.ipport
     let childrennum = this.ctx.request.body.childrennum
-    let gpslng = this.ctx.request.body.gpslng || '116.19545'
-    let gpslat = this.ctx.request.body.gpslat || '40.025408'
+    let gpslng = this.ctx.request.body.gpslng || ''
+    let gpslat = this.ctx.request.body.gpslat || ''
     let gcjlng = this.ctx.request.body.gcjlng || ''
     let gcjlat = this.ctx.request.body.gcjlat || ''
+    let dtusn = this.ctx.request.body.dtusn || ''
 
     console.log("catalogid=", catalogid)
     let data = {}
@@ -189,7 +190,7 @@ class HomeController extends Controller {
       data.code = 2
       data.result ="树节点已存在，catalogid =" + catalogid
     } else {
-      await client.query('INSERT INTO power_station_tree (catalogid,parentid,label,stationtype,commtype,protocoltype,positioninfo,addinfo,ipaddress,ipport,childrennum,gpslng,gpslat,gcjlng,gcjlat) VALUES (' + 
+      await client.query('INSERT INTO power_station_tree (catalogid,parentid,label,stationtype,commtype,protocoltype,positioninfo,addinfo,ipaddress,ipport,childrennum,gpslng,gpslat,gcjlng,gcjlat,dtusn) VALUES (' + 
             "'" + catalogid + "'" + ","+
             "'" + parentid +"'"+","+
             "'" + label +"'"+","+
@@ -204,10 +205,11 @@ class HomeController extends Controller {
             "'" + gpslng +"'"+","+
             "'" + gpslat +"'"+","+
             "'" + gcjlng +"'"+","+
-            "'" + gcjlat +"')")
+            "'" + gcjlat +"'"+","+
+            "'" + dtusn +"')")
             console.log('数据库中没有该节点，添加树节点成功！！！！，新增节点的catalogid =', catalogid)
       data.code = 1
-      data.result = {catalogid:catalogid, parentid:parentid, label:label, stationtype:stationtype, commtype:commtype, protocoltype:protocoltype, positioninfo:positioninfo, addinfo:addinfo, ipaddress:ipaddress, ipport:ipport, childrennum:childrennum, gpslng:gpslng, gpslat:gpslat, gcjlng:gcjlng, gcjlat:gcjlat}
+      data.result = {catalogid:catalogid, parentid:parentid, label:label, stationtype:stationtype, commtype:commtype, protocoltype:protocoltype, positioninfo:positioninfo, addinfo:addinfo, ipaddress:ipaddress, ipport:ipport, childrennum:childrennum, gpslng:gpslng, gpslat:gpslat, gcjlng:gcjlng, gcjlat:gcjlat, dtusn:dtusn}
     }
     client.end()
     this.ctx.body = data

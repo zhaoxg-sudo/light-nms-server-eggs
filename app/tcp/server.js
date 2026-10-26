@@ -1,11 +1,36 @@
 const net = require('net');
+const { Pool, Client } = require('pg')
+const pool = require('../pgpool');
 // GPS NMEA定位解析
+// function autoParse(buf) {
+//   const str = buf.toString().trim();
+//   if (!str.startsWith('$G')) return null;
+//   try {
+//     const arr = str.split(',');
+//     const status = arr[2] === 'A' ? '有效定位' : '无效定位';
+//     function convert(val, dir) {
+//       if (!val) return null;
+//       const deg = Math.floor(val / 100);
+//       const min = (val / 100 - deg) * 60;
+//       let res = deg + min / 60;
+//       if (dir === 'S' || dir === 'W') res = -res;
+//       return Number(res.toFixed(6));
+//     }
+//     const lat = convert(Number(arr[3]), arr[4]);
+//     const lng = convert(Number(arr[5]), arr[6]);
+//     return { lat, lng, status };
+//   } catch (e) {
+//     return null;
+//   }
+// }
 function autoParse(buf) {
   const str = buf.toString().trim();
   if (!str.startsWith('$G')) return null;
   try {
     const arr = str.split(',');
-    const status = arr[2] === 'A' ? '有效定位' : '无效定位';
+    const gpsValid = arr[2] === 'A';
+    const status = gpsValid ? '有效定位' : '无效定位';
+
     function convert(val, dir) {
       if (!val) return null;
       const deg = Math.floor(val / 100);
@@ -16,12 +41,14 @@ function autoParse(buf) {
     }
     const lat = convert(Number(arr[3]), arr[4]);
     const lng = convert(Number(arr[5]), arr[6]);
-    return { lat, lng, status };
+    return { lat, lng, status, valid: gpsValid };
   } catch (e) {
     return null;
   }
 }
+
 module.exports = app => {
+  // tcpClients增加GPS位置
   app.tcpClients = new Map();
   app.deviceMap = new Map();
   app.ipBindSn = new Map();
@@ -97,22 +124,33 @@ module.exports = app => {
     }
     return list
   }
-  // GPS独立列表接口（从tcpClients拿gpsStatus）
+  // GPS独立列表接口：遍历所有GPS通道tcpClients，不依赖deviceMap
+  // 
   app.getGpsChannelList = function () {
+    const GPS_EXPIRE_MS = 3 * 60 * 1000;
     const list = []
-    for (const [sn, dev] of app.deviceMap.entries()) {
-      const gpsMeta = app.tcpClients.get(dev.gpsChannel);
+    for (const [clientKey, gpsMeta] of app.tcpClients.entries()) {
+      if (!gpsMeta || gpsMeta.type !== 'gps') continue
+      const now = Date.now()
+      let gpsStatus = 'offline'
+      if (gpsMeta.lastGpsHeart && (now - gpsMeta.lastGpsHeart < GPS_EXPIRE_MS)) {
+        gpsStatus = gpsMeta.gpsStatus || 'online'
+      }
       list.push({
-        sn,
-        cid: dev.cid,
-        clientKey: dev.gpsChannel,
-        publicIp: (gpsMeta && gpsMeta.publicIp) || null,
-        gpsStatus: gpsMeta ? gpsMeta.gpsStatus : 'offline',
-        lastGpsHeart: dev.lastGpsHeart
+        sn: gpsMeta.sn || null,
+        cid: gpsMeta.cid || null,
+        clientKey,
+        publicIp: gpsMeta.publicIp || null,
+        gpsStatus,
+        lastGpsHeart: gpsMeta.lastGpsHeart || null,
+        lat: typeof gpsMeta.lat !== 'undefined' ? gpsMeta.lat : null,
+        lng: typeof gpsMeta.lng !== 'undefined' ? gpsMeta.lng : null,
+        gpsValid: typeof gpsMeta.gpsValid !== 'undefined' ? gpsMeta.gpsValid : false
       })
     }
     return list
   }
+  
   // 下发工具函数
   app.sendTcpCmd = function (payload, target) {
     const sendStr = JSON.stringify(payload);
@@ -176,6 +214,8 @@ module.exports = app => {
       sn: null,
       cid: null,
       type: null,
+      lat: null,
+      lng:null,
       lastGpsHeart: 0,
       gpsStatus: 'offline'
     };
@@ -185,10 +225,10 @@ module.exports = app => {
       const bindSn = app.ipBindSn.get(publicIp);
       clientMeta.sn = bindSn;
       const dev = app.deviceMap.get(bindSn);
-      if (dev?.cid) clientMeta.cid = dev.cid;
+      if (dev && dev.cid) clientMeta.cid = dev.cid;
       app.logger.info(`[自动绑定] ${clientKey} SN:${bindSn} CID:${clientMeta.cid || '无'}`);
     }
-    socket.on('data', buffer => {
+    socket.on('data', async buffer => {
       try {
         const raw = buffer.toString().trim();
         if (!raw) return;
@@ -227,64 +267,251 @@ module.exports = app => {
           return;
         }
         // 2、GPS报文：只更新GPS独立心跳
+        // if (raw.startsWith('$G')) {
+        //   clientMeta.type = 'gps';
+        //   const gpsInfo = autoParse(buffer);
+          
+        //   if (!gpsInfo) return;
+        //   clientMeta.lastGpsHeart = Date.now();
+        //   if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
+        //     const dev = app.deviceMap.get(clientMeta.sn);
+        //     dev.gpsChannel = clientKey;
+        //     dev.lastGpsHeart = Date.now();
+        //   }
+        //   // GPS通道状态跃迁，状态存在clientMeta
+        //   if(clientMeta.gpsStatus !== 'online'){
+        //     clientMeta.gpsStatus = 'online';
+        //     app.emitGpsChannelStatusChange(clientMeta, 'online');
+        //   }
+
+        //   app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
+        //   if (app.io && app.io.of('/')) {
+        //     app.io.of('/').emit('gps', {
+        //       sn: clientMeta.sn,
+        //       cid: clientMeta.cid,
+        //       clientKey,
+        //       lat: gpsInfo.lat,
+        //       lng: gpsInfo.lng,
+        //       status: gpsInfo.status,
+        //       time: new Date().toLocaleString()
+        //     });
+        //   }
+        //   return;
+        // }
+        // 2、GPS报文：只更新GPS独立心跳
         if (raw.startsWith('$G')) {
           clientMeta.type = 'gps';
           const gpsInfo = autoParse(buffer);
           
           if (!gpsInfo) return;
-          clientMeta.lastGpsHeart = Date.now();
-          if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-            const dev = app.deviceMap.get(clientMeta.sn);
-            dev.gpsChannel = clientKey;
-            dev.lastGpsHeart = Date.now();
-          }
-          // GPS通道状态跃迁，状态存在clientMeta
-          if(clientMeta.gpsStatus !== 'online'){
-            clientMeta.gpsStatus = 'online';
-            app.emitGpsChannelStatusChange(clientMeta, 'online');
+          const recvSn = clientMeta.sn;
+          // 没有SN的GPS报文直接丢弃
+          if (!recvSn) {
+            app.logger.warn(`[GPS通道] 报文有GPS数据，但尚未绑定SN，clientKey:${clientKey}`);
+            return;
           }
 
-          app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
-          if (app.io && app.io.of('/')) {
-            app.io.of('/').emit('gps', {
-              sn: clientMeta.sn,
-              cid: clientMeta.cid,
-              clientKey,
-              lat: gpsInfo.lat,
-              lng: gpsInfo.lng,
-              status: gpsInfo.status,
-              time: new Date().toLocaleString()
-            });
+          try {
+            const res = await pool.query(
+              'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
+              [recvSn]
+            );
+            let dbCid = null;
+            let newGpsStatus = 'unknown';
+
+            if (res.rows.length > 0) {
+              const row = res.rows[0];
+              dbCid = row.catalogid;
+              newGpsStatus = 'online';
+            } else {
+              app.logger.warn(`[GPS未知通道] clientKey:${clientKey}, ip:${clientMeta.publicIp}, DTUSN:${recvSn} 在power_station_tree无注册，标记unknown`);
+              dbCid = null;
+            }
+
+            clientMeta.lastGpsHeart = Date.now();
+            clientMeta.cid = dbCid;
+            clientMeta.lat = gpsInfo.lat;
+            clientMeta.lng = gpsInfo.lng;
+            clientMeta.gpsValid = gpsInfo.valid;
+
+            if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
+              const dev = app.deviceMap.get(clientMeta.sn);
+              dev.gpsChannel = clientKey;
+              dev.lastGpsHeart = Date.now();
+              dev.cid = dbCid;
+            }
+
+            // 状态变化才推送
+            if(clientMeta.gpsStatus !== newGpsStatus){
+              clientMeta.gpsStatus = newGpsStatus;
+              app.emitGpsChannelStatusChange(clientMeta, newGpsStatus);
+            }
+
+            app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
+            if (app.io && app.io.of('/')) {
+              app.io.of('/').emit('gps', {
+                sn: clientMeta.sn,
+                cid: clientMeta.cid,
+                clientKey,
+                lat: gpsInfo.lat,
+                lng: gpsInfo.lng,
+                gpsValid: clientMeta.gpsValid,
+                status: gpsInfo.status,
+                time: new Date().toLocaleString()
+              });
+            }
+          } catch (dbErr) {
+            app.logger.error(`[GPS通道] 查询数据库异常 DTUSN:${recvSn}`, dbErr);
+            return;
           }
           return;
         }
-        // 3、业务JSON心跳：只更新业务独立心跳
+
+        // // 3、业务JSON心跳：只更新业务独立心跳
+        // if (raw.startsWith('{')) {
+        //   clientMeta.type = 'business';
+        //   const data = JSON.parse(raw);
+        //   //【新增】匹配应答msgId，触发等待任务resolve
+        //   if (data.msgId) {
+        //     app.handleDeviceReply(data.msgId, data);
+        //   }
+        //   if (data.id) {
+        //     clientMeta.cid = data.id;
+        //     if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
+        //       const dev = app.deviceMap.get(clientMeta.sn);
+        //       dev.cid = data.id;
+        //       dev.lastBusinessHeart = Date.now(); // 独立业务心跳
+        //       dev.businessChannel = clientKey;
+        //       // ✅【修改1：只在状态变化时推送上线】
+        //       if (dev.status !== 'online') {
+        //         dev.status = 'online';
+        //         app.emitDeviceStatusChange(dev, 'online');
+        //       }
+        //       for (const [ck, meta] of app.tcpClients.entries()) {
+        //         if (meta.publicIp === publicIp) {
+        //           meta.cid = data.id;
+        //         }
+        //       }
+        //     }
+        //   }
+        //   if (app.io && app.io.of('/')) {
+        //     app.io.of('/').emit('deviceData', {
+        //       sn: clientMeta.sn,
+        //       cid: clientMeta.cid,
+        //       clientKey,
+        //       payload: data,
+        //       time: new Date().toLocaleString()
+        //     });
+        //   }
+        //   return;
+        // }
+        // 3、业务JSON报文：区分 heart心跳 / code="1"应答 / alarm告警 / 其它
         if (raw.startsWith('{')) {
-          clientMeta.type = 'business';
-          const data = JSON.parse(raw);
-          //【新增】匹配应答msgId，触发等待任务resolve
-          if (data.msgId) {
-            app.handleDeviceReply(data.msgId, data);
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch (e) {
+            app.logger.warn(`[JSON解析失败] ${clientKey} raw:${raw}`);
+            return;
           }
-          if (data.id) {
-            clientMeta.cid = data.id;
-            if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-              const dev = app.deviceMap.get(clientMeta.sn);
-              dev.cid = data.id;
-              dev.lastBusinessHeart = Date.now(); // 独立业务心跳
-              dev.businessChannel = clientKey;
-              // ✅【修改1：只在状态变化时推送上线】
-              if (dev.status !== 'online') {
-                dev.status = 'online';
-                app.emitDeviceStatusChange(dev, 'online');
-              }
-              for (const [ck, meta] of app.tcpClients.entries()) {
-                if (meta.publicIp === publicIp) {
-                  meta.cid = data.id;
+
+          // 1、heart 心跳：更新心跳时间 + CID校验、变更设备状态（心跳不带msgId）
+          if (data.cmd === 'heart') {
+            clientMeta.type = 'business';
+            if (data.id) {
+              const incomingCid = data.id;
+              clientMeta.cid = incomingCid;
+              if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
+                const dev = app.deviceMap.get(clientMeta.sn);
+                dev.businessChannel = clientKey;
+                dev.lastBusinessHeart = Date.now();
+
+                try {
+                  const res = await pool.query(
+                    'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
+                    [clientMeta.sn]
+                  );
+                  if (res.rows.length > 0) {
+                    const dbCid = res.rows[0].catalogid;
+                    dev.cid = dbCid;
+                    if (incomingCid !== dbCid) {
+                      app.logger.warn(`[CID不匹配告警] SN:${clientMeta.sn} 库CID:${dbCid} 业务上报CID:${incomingCid}`);
+                      if (dev.status !== 'unknown') {
+                        dev.status = 'unknown';
+                        app.emitDeviceStatusChange(dev, 'unknown');
+                      }
+                    } else {
+                      if (dev.status !== 'online') {
+                        dev.status = 'online';
+                        app.emitDeviceStatusChange(dev, 'online');
+                      }
+                    }
+                  } else {
+                    app.logger.warn(`[业务通道未知SN] SN:${clientMeta.sn} 不在power_station_tree`);
+                    if (dev.status !== 'unknown') {
+                      dev.status = 'unknown';
+                      app.emitDeviceStatusChange(dev, 'unknown');
+                    }
+                  }
+                } catch (dbErr) {
+                  app.logger.error(`[业务心跳查询库失败] SN:${clientMeta.sn}`, dbErr);
+                }
+
+                // 同IP通道同步cid
+                for (const [ck, meta] of app.tcpClients.entries()) {
+                  if (meta.publicIp === publicIp) {
+                    meta.cid = incomingCid;
+                  }
                 }
               }
             }
+
+            if (app.io && app.io.of('/')) {
+              app.io.of('/').emit('deviceData', {
+                sn: clientMeta.sn,
+                cid: clientMeta.cid,
+                clientKey,
+                payload: data,
+                time: new Date().toLocaleString()
+              });
+            }
+            return;
           }
+
+          // 2、alarm 告警消息：仅日志+透传，不处理回执、不刷新心跳、不修改状态
+          if (data.cmd === 'alarm') {
+            app.logger.info(`[设备告警上报] SN:${clientMeta.sn}, alarmData:`, data);
+            if (app.io && app.io.of('/')) {
+              app.io.of('/').emit('deviceData', {
+                sn: clientMeta.sn,
+                cid: clientMeta.cid,
+                clientKey,
+                payload: data,
+                time: new Date().toLocaleString()
+              });
+            }
+            return;
+          }
+
+          // 3、应答消息 code === "1"：只处理回执，【不修改设备状态、不刷新心跳、不查库】
+          if (data.code === '1') {
+            if (data.msgId) {
+              app.handleDeviceReply(data.msgId, data);
+            }
+            app.logger.info(`[设备应答回执] SN:${clientMeta.sn} msgId:${data.msgId}`);
+            if (app.io && app.io.of('/')) {
+              app.io.of('/').emit('deviceData', {
+                sn: clientMeta.sn,
+                cid: clientMeta.cid,
+                clientKey,
+                payload: data,
+                time: new Date().toLocaleString()
+              });
+            }
+            return;
+          }
+
+          // 其余所有JSON报文：原样透传
           if (app.io && app.io.of('/')) {
             app.io.of('/').emit('deviceData', {
               sn: clientMeta.sn,
@@ -296,6 +523,7 @@ module.exports = app => {
           }
           return;
         }
+
         app.logger.warn(`[未知报文] SN:${clientMeta.sn} CID:${clientMeta.cid} ${clientKey} ${raw}`);
       } catch (err) {
         app.logger.error('[TCP数据处理异常]', err);
@@ -398,7 +626,7 @@ module.exports = app => {
           gpsExpire = gpsMeta.lastGpsHeart < expire;
         }
     
-        app.logger.info(`[设备状态校验] SN:${sn} 业务超时:${busExpire}, GPS超时:${gpsExpire}`);
+        app.logger.info(`[设备状态校验] SN:${sn} CID:${dev.cid} 业务超时:${busExpire}, GPS超时:${gpsExpire}`);
     
         // 业务心跳单独超时处理（只改业务状态，不删除设备）
         if(busExpire){

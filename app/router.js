@@ -67,5 +67,6 @@ module.exports = app => {
   router.post('/api/tcp/send', controller.tcp.send);
   router.get('/api/tcp/client', controller.tcp.tcpclient);
   router.get('/api/tcp/devicelist', controller.tcp.devicelist);
+  router.get('/api/tcp/gpschannellist', controller.tcp.gpschannellist);
   app.io.route('client_message',app.io.controller.switch.ping);
 };
