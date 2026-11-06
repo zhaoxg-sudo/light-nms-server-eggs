@@ -2,27 +2,6 @@ const net = require('net');
 const { Pool, Client } = require('pg')
 const pool = require('../pgpool');
 // GPS NMEA定位解析
-// function autoParse(buf) {
-//   const str = buf.toString().trim();
-//   if (!str.startsWith('$G')) return null;
-//   try {
-//     const arr = str.split(',');
-//     const status = arr[2] === 'A' ? '有效定位' : '无效定位';
-//     function convert(val, dir) {
-//       if (!val) return null;
-//       const deg = Math.floor(val / 100);
-//       const min = (val / 100 - deg) * 60;
-//       let res = deg + min / 60;
-//       if (dir === 'S' || dir === 'W') res = -res;
-//       return Number(res.toFixed(6));
-//     }
-//     const lat = convert(Number(arr[3]), arr[4]);
-//     const lng = convert(Number(arr[5]), arr[6]);
-//     return { lat, lng, status };
-//   } catch (e) {
-//     return null;
-//   }
-// }
 function autoParse(buf) {
   const str = buf.toString().trim();
   if (!str.startsWith('$G')) return null;
@@ -53,7 +32,220 @@ module.exports = app => {
   app.deviceMap = new Map();
   app.ipBindSn = new Map();
   app.tcpCleanTimer = null;
+
+  // 工具函数，放到app初始化位置
+  app.formatDateTime = function (d) {
+    const date = d || new Date();
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${day} ${h}:${mi}:${s}`;
+  };
+
+  // 写入当前告警表 power_alarm_current
+  // app.writeAlarmToCurrentDB = async function (alarmInfo) {
+  //   const sql = `
+  //     INSERT INTO power_alarm_current (
+  //       alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime,
+  //       alarmdetail, alarmreason, alarmlevel, alarmconfirmedflag, alarmconfirmedtime,
+  //       alarmconfirmedinfo, alarmrestoreflag, alarmrestoreinfo, alarmsourceip,
+  //       alarmaddition, alarmdtusn, alarmdevtype, tenantname
+  //     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+  //     ON CONFLICT (alarmid) DO NOTHING;
+  //   `;
+  //   const params = [
+  //     alarmInfo.alarmId,
+  //     alarmInfo.cid || '',
+  //     alarmInfo.sn || '',
+  //     alarmInfo.time || '',
+  //     alarmInfo.fireTime || alarmInfo.time || '',
+  //     alarmInfo.alarmDetail || '',
+  //     alarmInfo.alarmReason || '',
+  //     alarmInfo.alarmLevel || '',
+  //     alarmInfo.confirmFlag || '0',
+  //     alarmInfo.confirmTime || '',
+  //     alarmInfo.confirmInfo || '',
+  //     alarmInfo.restoreFlag || '0',
+  //     alarmInfo.restoreInfo || '',
+  //     alarmInfo.sourceIp || '',
+  //     alarmInfo.addition || '',
+  //     alarmInfo.sn || '',
+  //     alarmInfo.devType || '',
+  //     alarmInfo.tenantName || ''
+  //   ];
+  //   try {
+  //     await pool.query(sql, params);
+  //   } catch (err) {
+  //     app.logger.error(`[writeAlarmToCurrentDB] alarmId:${alarmInfo.alarmId}`, err.message);
+  //   }
+  // };
+  app.writeAlarmToCurrentDB = async function(alarmInfo) {
+    try {
+      const devSn = alarmInfo.sn;
+      const catalogid = alarmInfo.cid || '';
+      const devType = alarmInfo.devType || '';
+      const tenantName = alarmInfo.tenantName || '';
+      const publicIp = alarmInfo.sourceIp || '';
+      const nowStr = app.formatDateTime();
+      const alarmid = `${catalogid}_${nowStr}`;
+      const alarmDetailText = 'POWER_OFF';
   
+      const exist = await pool.query(`
+        SELECT 1 FROM power_alarm_current
+        WHERE alarmid = $1 AND alarmdetail = $2
+      `, [alarmid, alarmDetailText]);
+      if (exist.rows.length > 0) {
+        app.logger.info(`[告警跳过] SN:${devSn} POWER_OFF告警已存在`);
+        return;
+      }
+  
+      await pool.query(`
+        INSERT INTO power_alarm_current (
+          alarmid,
+          alarmstation,
+          alarmmudid,
+          alarmreceivedtime,
+          alarmfiredtime,
+          alarmdetail,
+          alarmreason,
+          alarmlevel,
+          alarmconfirmedflag,
+          alarmconfirmedtime,
+          alarmconfirmedinfo,
+          alarmrestoreflag,
+          alarmrestoreinfo,
+          alarmsourceip,
+          alarmaddition,
+          alarmdtusn,
+          alarmdevtype,
+          tenantname
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      `, [
+        alarmid,
+        catalogid,
+        '',
+        nowStr,
+        nowStr,
+        alarmDetailText,
+        'DTU上报掉电信号',
+        '1',
+        '0',
+        '',
+        '',
+        '0',
+        '',
+        publicIp,
+        '',
+        devSn,
+        devType,
+        tenantName
+      ]);
+  
+      await pool.query(`
+        INSERT INTO power_alarm_history (
+          alarmid,
+          alarmstation,
+          alarmmudid,
+          alarmreceivedtime,
+          alarmfiredtime,
+          alarmdetail,
+          alarmreason,
+          alarmlevel,
+          alarmconfirmedflag,
+          alarmconfirmedtime,
+          alarmconfirmedinfo,
+          alarmsourceip,
+          alarmaddition,
+          alarmdtusn
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      `, [
+        alarmid,
+        catalogid,
+        '',
+        nowStr,
+        nowStr,
+        alarmDetailText,
+        'DTU上报掉电信号',
+        '1',
+        '0',
+        '',
+        '',
+        publicIp,
+        '',
+        devSn
+      ]);
+      app.logger.info(`[告警入库] SN:${devSn} POWER_OFF alarmid=${alarmid}`);
+    } catch (e) {
+      app.logger.error(`[告警入库失败] SN:${alarmInfo.sn}`, e);
+    }
+  };
+  
+  // WebSocket推送告警
+  app.websocketAlarm = function (alarmInfo, clientKey) {
+    if (!app.io || !app.io.of('/')) return;
+    app.io.of('/').emit('alarmData', {
+      sn: alarmInfo.sn,
+      cid: alarmInfo.cid,
+      clientKey,
+      payload: {
+        alarmid: alarmInfo.alarmId,
+        alarmType: alarmInfo.alarmType,
+        alarmdtusn: alarmInfo.sn,
+        alarmdevtype: alarmInfo.devType,
+        tenantname: alarmInfo.tenantName,
+        alarmdetail: alarmInfo.alarmDetail,
+        alarmreason: alarmInfo.alarmReason,
+        alarmlevel: alarmInfo.alarmLevel,
+        alarmconfirmflag: alarmInfo.confirmFlag,
+        alarmrestoreflag: alarmInfo.restoreFlag
+      },
+      time: alarmInfo.time
+    });
+  };
+
+  // 告警恢复，更新数据库
+  app.writeAlarmClearDB = async function(alarmInfo) {
+    const devSn = alarmInfo.devSn;
+    const alarmType = alarmInfo.type;
+    try {
+      const resCurrent = await pool.query(`
+        SELECT alarmid FROM power_alarm_current
+        WHERE alarmdtusn = $1 AND alarmdetail = $2
+      `, [devSn, alarmType]);
+
+      if (resCurrent.rows.length === 0) {
+        app.logger.info(`[告警恢复跳过] SN:${devSn} 无待恢复 ${alarmType} 告警`);
+        return;
+      }
+      const alarmid = resCurrent.rows[0].alarmid;
+      const restoreTime = app.formatDateTime();
+
+      await pool.query(`
+        UPDATE power_alarm_history
+        SET alarmrestoreflag = '1',
+            alarmrestoreinfo = $1,
+            alarmaddition = $2
+        WHERE alarmid = $3
+      `, [
+        'DTU上电，掉电告警自动恢复',
+        `恢复时间：${restoreTime}`,
+        alarmid
+      ]);
+
+      await pool.query(`
+        DELETE FROM power_alarm_current
+        WHERE alarmid = $1
+      `, [alarmid]);
+
+      app.logger.info(`[告警恢复成功] SN:${devSn}, alarmid:${alarmid}, 恢复时间:${restoreTime}`);
+    } catch (e) {
+      app.logger.error(`[告警恢复入库失败] SN:${devSn}`, e);
+    }
+  };
+
   // ✅【原有保留：设备业务状态变更主动推送，仅在online/offline切换时触发】
   app.emitDeviceStatusChange = function (dev, newStatus) {
     if (app.io && app.io.of('/')) {
@@ -61,7 +253,7 @@ module.exports = app => {
         sn: dev.sn,
         cid: dev.cid,
         status: newStatus,
-        time: new Date().toLocaleString()
+        time: app.formatDateTime(new Date())
       });
       app.logger.info(`[设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
     }
@@ -73,7 +265,7 @@ module.exports = app => {
           sn: dev.sn,
           cid: dev.cid,
           status: newStatus,
-          time: new Date().toLocaleString()
+          time: app.formatDateTime(new Date())
         });
         app.logger.info(`[设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
       }
@@ -85,7 +277,7 @@ module.exports = app => {
         sn: meta.sn,
         cid: meta.cid,
         status: newStatus,
-        time: new Date().toLocaleString()
+        time: app.formatDateTime(new Date())
       });
       app.logger.info(`[GPS通道状态变更] SN:${meta.sn} CID:${meta.cid} -> ${newStatus}`);
     }
@@ -143,7 +335,7 @@ module.exports = app => {
     const list = []
     for (const [clientKey, gpsMeta] of app.tcpClients.entries()) {
       if (!gpsMeta || gpsMeta.type !== 'gps') continue
-      const now = Date.now()
+      const now = app.formatDateTime(new Date())
       let gpsStatus = 'offline'
       if (gpsMeta.lastGpsHeart && (now - gpsMeta.lastGpsHeart < GPS_EXPIRE_MS)) {
         gpsStatus = gpsMeta.gpsStatus || 'online'
@@ -260,13 +452,31 @@ module.exports = app => {
               status: 'offline',
               gpsChannel: null,
               businessChannel: null,
-              lastOnline: Date.now(),
+              lastOnline: app.formatDateTime(new Date()),
               lastBusinessHeart: 0,
-              lastGpsHeart: 0
+              lastGpsHeart: 0,
+              // ========== 新增告警状态标记 ==========
+              alarmStatus: {
+                dtuPowerOff: false,
+                dtuOffline: false,
+                devOffline: false
+              }
             });
           }
           const devInfo = app.deviceMap.get(devSn);
-          devInfo.lastOnline = Date.now();
+          devInfo.lastOnline = app.formatDateTime(new Date());
+          // ========= 上电，POWER_OFF告警恢复 start =========
+          if (devInfo.alarmStatus.dtuPowerOff === true) {
+            devInfo.alarmStatus.dtuPowerOff = false;
+            app.logger.info(`[上电恢复] SN:${devSn} 清除掉电POWER_OFF告警`);
+            const alarmInfo = {
+              devSn: devSn,
+              cid: devInfo.cid || "",
+              type: "POWER_OFF",
+            };
+            await app.writeAlarmClearDB(alarmInfo);
+          }
+          // ========= 上电，POWER_OFF告警恢复 end =========
           for (const [ck, meta] of app.tcpClients.entries()) {
             if (meta.publicIp === publicIp) {
               meta.sn = devSn;
@@ -280,136 +490,54 @@ module.exports = app => {
         }
         // 2,POWER_OFF报文处理
         // 新增：断电告警原始报文 SN:POWER_OFF
+        // 【改造 POWER_OFF 断电告警块】
         if (raw.endsWith(':POWER_OFF')) {
           const arr = raw.split(':');
           const alarmSn = arr[0];
           app.logger.warn(`[断电告警 POWER_OFF 原始报文] SN:${alarmSn}`);
-          let cidVal = "";
+
+          const alarmInfo = {
+            alarmId: `${alarmSn}_POWER_OFF`,
+            sn: alarmSn,
+            cid: "",
+            devType: "",
+            tenantName: "",
+            alarmType: "POWER_OFF",
+            alarmDetail: "设备断电",
+            alarmReason: "DTU断电，通信中断",
+            alarmLevel: "重要",
+            confirmFlag: "0",
+            restoreFlag: "0",
+            sourceIp: "",
+            addition: "POWER_OFF断电告警",
+            time: app.formatDateTime(new Date())
+          };
+
           if (app.deviceMap.has(alarmSn)) {
             const dev = app.deviceMap.get(alarmSn);
-            cidVal = dev.cid || "";
-            if (dev.status !== 'poweroff') {
-              // dev.status = 'poweroff';
+            alarmInfo.cid = dev.cid || "";
+            alarmInfo.devType = dev.protocoltype || "";
+            alarmInfo.tenantName = dev.tenantname || "";
+
+            // ✅ 使用 alarmStatus 标记控制防重复告警
+            if (!dev.alarmStatus.dtuPowerOff) {
+              dev.alarmStatus.dtuPowerOff = true;
               app.emitPoweroffStatusChange(dev, 'poweroff');
+              (async () => {
+                await Promise.all([
+                  app.writeAlarmToCurrentDB(alarmInfo),
+                  // app.writeAlarmToHistoryDB(alarmInfo)
+                ]);
+                app.websocketAlarm(alarmInfo, clientKey);
+              })();
             }
           } else {
             app.logger.warn(`[断电告警] SN:${alarmSn} 还未注册到deviceMap，暂不处理状态`);
           }
-          // 同时透传给前端告警流
-          if (app.io && app.io.of('/')) {
-            app.io.of('/').emit('alarmData', {
-              sn: alarmSn,
-              cid: cidVal,
-              clientKey,
-              payload: { alarmType: 'POWER_OFF', sn: alarmSn },
-              time: new Date().toLocaleString()
-            });
-          }
           return;
         }
 
-        // 2、GPS报文：只更新GPS独立心跳
-        // if (raw.startsWith('$G')) {
-        //   clientMeta.type = 'gps';
-        //   const gpsInfo = autoParse(buffer);
-          
-        //   if (!gpsInfo) return;
-        //   clientMeta.lastGpsHeart = Date.now();
-        //   if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-        //     const dev = app.deviceMap.get(clientMeta.sn);
-        //     dev.gpsChannel = clientKey;
-        //     dev.lastGpsHeart = Date.now();
-        //   }
-        //   // GPS通道状态跃迁，状态存在clientMeta
-        //   if(clientMeta.gpsStatus !== 'online'){
-        //     clientMeta.gpsStatus = 'online';
-        //     app.emitGpsChannelStatusChange(clientMeta, 'online');
-        //   }
-
-        //   app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
-        //   if (app.io && app.io.of('/')) {
-        //     app.io.of('/').emit('gps', {
-        //       sn: clientMeta.sn,
-        //       cid: clientMeta.cid,
-        //       clientKey,
-        //       lat: gpsInfo.lat,
-        //       lng: gpsInfo.lng,
-        //       status: gpsInfo.status,
-        //       time: new Date().toLocaleString()
-        //     });
-        //   }
-        //   return;
-        // }
-        // 2、GPS报文：只更新GPS独立心跳
-        // if (raw.startsWith('$G')) {
-        //   clientMeta.type = 'gps';
-        //   const gpsInfo = autoParse(buffer);
-          
-        //   if (!gpsInfo) return;
-        //   const recvSn = clientMeta.sn;
-        //   // 没有SN的GPS报文直接丢弃
-        //   if (!recvSn) {
-        //     app.logger.warn(`[GPS通道] 报文有GPS数据，但尚未绑定SN，clientKey:${clientKey}`);
-        //     return;
-        //   }
-
-        //   try {
-        //     const res = await pool.query(
-        //       'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
-        //       [recvSn]
-        //     );
-        //     // let dbCid = null;
-        //     // 用上报设备的cid填充
-        //     let dbCid = null;
-        //     let newGpsStatus = 'unknown';
-
-        //     if (res.rows.length > 0) {
-        //       const row = res.rows[0];
-        //       dbCid = row.catalogid;
-        //       newGpsStatus = 'online';
-        //     } else {
-        //       app.logger.warn(`[GPS未知通道] clientKey:${clientKey}, ip:${clientMeta.publicIp}, DTUSN:${recvSn} 在power_station_tree无注册，标记unknown`);
-        //       dbCid = null;
-        //     }
-
-        //     clientMeta.lastGpsHeart = Date.now();
-        //     clientMeta.cid = dbCid;
-        //     clientMeta.lat = gpsInfo.lat;
-        //     clientMeta.lng = gpsInfo.lng;
-        //     clientMeta.gpsValid = gpsInfo.valid;
-
-        //     if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-        //       const dev = app.deviceMap.get(clientMeta.sn);
-        //       dev.gpsChannel = clientKey;
-        //       dev.lastGpsHeart = Date.now();
-        //       dev.cid = dbCid;
-        //     }
-
-        //     // 状态变化才推送
-        //     if(clientMeta.gpsStatus !== newGpsStatus){
-        //       clientMeta.gpsStatus = newGpsStatus;
-        //       app.emitGpsChannelStatusChange(clientMeta, newGpsStatus);
-        //     }
-
-        //     app.logger.info('[GPS] ' + 'lat=' + gpsInfo.lat + ' , '  + 'lng='+ gpsInfo.lng + ' , '  + 'status='+ gpsInfo.status)
-        //     if (app.io && app.io.of('/')) {
-        //       app.io.of('/').emit('gps', {
-        //         sn: clientMeta.sn,
-        //         cid: clientMeta.cid,
-        //         clientKey,
-        //         lat: gpsInfo.lat,
-        //         lng: gpsInfo.lng,
-        //         gpsValid: clientMeta.gpsValid,
-        //         status: gpsInfo.status,
-        //         time: new Date().toLocaleString()
-        //       });
-        //     }
-        //   } catch (dbErr) {
-        //     app.logger.error(`[GPS通道] 查询数据库异常 DTUSN:${recvSn}`, dbErr);
-        //     return;
-        //   }
-        //   return;
-        // }
+        // 3、GPS报文：只更新GPS独立心跳
         if (raw.startsWith('$G')) {
           clientMeta.type = 'gps';
           const gpsInfo = autoParse(buffer);
@@ -436,7 +564,7 @@ module.exports = app => {
               app.logger.warn(`[GPS未知通道] clientKey:${clientKey}, ip:${clientMeta.publicIp}, DTUSN:${recvSn} 在power_station_tree无注册，标记unknown`);
             }
         
-            clientMeta.lastGpsHeart = Date.now();
+            clientMeta.lastGpsHeart = app.formatDateTime(new Date());
             // ✅【标注修改】使用clientMeta已有的cid（业务心跳同步过来的设备cid），不再使用dbCid
             // clientMeta.cid = dbCid;
             clientMeta.lat = gpsInfo.lat;
@@ -446,7 +574,7 @@ module.exports = app => {
             if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
               const dev = app.deviceMap.get(clientMeta.sn);
               dev.gpsChannel = clientKey;
-              dev.lastGpsHeart = Date.now();
+              dev.lastGpsHeart = app.formatDateTime(new Date());
               // ✅【标注修改】同步dev.cid为设备上报cid，不用库内dbCid
               dev.cid = clientMeta.cid;
             }
@@ -467,7 +595,7 @@ module.exports = app => {
                 lng: gpsInfo.lng,
                 gpsValid: clientMeta.gpsValid,
                 status: newGpsStatus,
-                time: new Date().toLocaleString()
+                time: app.formatDateTime(new Date())
               });
             }
           } catch (dbErr) {
@@ -477,45 +605,7 @@ module.exports = app => {
           return;
         }
         
-        // // 3、业务JSON心跳：只更新业务独立心跳
-        // if (raw.startsWith('{')) {
-        //   clientMeta.type = 'business';
-        //   const data = JSON.parse(raw);
-        //   //【新增】匹配应答msgId，触发等待任务resolve
-        //   if (data.msgId) {
-        //     app.handleDeviceReply(data.msgId, data);
-        //   }
-        //   if (data.id) {
-        //     clientMeta.cid = data.id;
-        //     if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-        //       const dev = app.deviceMap.get(clientMeta.sn);
-        //       dev.cid = data.id;
-        //       dev.lastBusinessHeart = Date.now(); // 独立业务心跳
-        //       dev.businessChannel = clientKey;
-        //       // ✅【修改1：只在状态变化时推送上线】
-        //       if (dev.status !== 'online') {
-        //         dev.status = 'online';
-        //         app.emitDeviceStatusChange(dev, 'online');
-        //       }
-        //       for (const [ck, meta] of app.tcpClients.entries()) {
-        //         if (meta.publicIp === publicIp) {
-        //           meta.cid = data.id;
-        //         }
-        //       }
-        //     }
-        //   }
-        //   if (app.io && app.io.of('/')) {
-        //     app.io.of('/').emit('deviceData', {
-        //       sn: clientMeta.sn,
-        //       cid: clientMeta.cid,
-        //       clientKey,
-        //       payload: data,
-        //       time: new Date().toLocaleString()
-        //     });
-        //   }
-        //   return;
-        // }
-        // 3、业务JSON报文：区分 heart心跳 / code="1"应答 / alarm告警 / 其它
+        // 4、业务JSON报文：区分 heart心跳 / code="1"应答 / alarm告警 / 其它
         if (raw.startsWith('{')) {
           let data;
           try {
@@ -528,68 +618,7 @@ module.exports = app => {
           if (data.msgId) {
             app.handleDeviceReply(data.msgId, data);
           }
-          // 1、heart 心跳：更新心跳时间 + CID校验、变更设备状态（心跳不带msgId）
-          // if (data.cmd === 'heart') {
-          //   clientMeta.type = 'business';
-          //   if (data.id) {
-          //     const incomingCid = data.id;
-          //     clientMeta.cid = incomingCid;
-          //     if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-          //       const dev = app.deviceMap.get(clientMeta.sn);
-          //       dev.businessChannel = clientKey;
-          //       dev.lastBusinessHeart = Date.now();
-
-          //       try {
-          //         const res = await pool.query(
-          //           'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
-          //           [clientMeta.sn]
-          //         );
-          //         if (res.rows.length > 0) {
-          //           const dbCid = res.rows[0].catalogid;
-          //           dev.cid = dbCid;
-          //           if (incomingCid !== dbCid) {
-          //             app.logger.warn(`[CID不匹配告警] SN:${clientMeta.sn} 库CID:${dbCid} 业务上报CID:${incomingCid}`);
-          //             if (dev.status !== 'unknown') {
-          //               dev.status = 'unknown';
-          //               app.emitDeviceStatusChange(dev, 'unknown');
-          //             }
-          //           } else {
-          //             if (dev.status !== 'online') {
-          //               dev.status = 'online';
-          //               app.emitDeviceStatusChange(dev, 'online');
-          //             }
-          //           }
-          //         } else {
-          //           app.logger.warn(`[业务通道未知SN] SN:${clientMeta.sn} 不在power_station_tree`);
-          //           if (dev.status !== 'unknown') {
-          //             dev.status = 'unknown';
-          //             app.emitDeviceStatusChange(dev, 'unknown');
-          //           }
-          //         }
-          //       } catch (dbErr) {
-          //         app.logger.error(`[业务心跳查询库失败] SN:${clientMeta.sn}`, dbErr);
-          //       }
-
-          //       // 同IP通道同步cid
-          //       for (const [ck, meta] of app.tcpClients.entries()) {
-          //         if (meta.publicIp === publicIp) {
-          //           meta.cid = incomingCid;
-          //         }
-          //       }
-          //     }
-          //   }
-
-          //   if (app.io && app.io.of('/')) {
-          //     app.io.of('/').emit('deviceData', {
-          //       sn: clientMeta.sn,
-          //       cid: clientMeta.cid,
-          //       clientKey,
-          //       payload: data,
-          //       time: new Date().toLocaleString()
-          //     });
-          //   }
-          //   return;
-          // }
+         
           // 1、heart 心跳：更新心跳时间 + CID校验、变更设备状态（心跳不带msgId）
           if (data.cmd === 'heart') {
             clientMeta.type = 'business';
@@ -599,7 +628,7 @@ module.exports = app => {
               if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
                 const dev = app.deviceMap.get(clientMeta.sn);
                 dev.businessChannel = clientKey;
-                dev.lastBusinessHeart = Date.now();
+                dev.lastBusinessHeart = app.formatDateTime(new Date());
 
                 try {
                   const res = await pool.query(
@@ -652,7 +681,7 @@ module.exports = app => {
                 cid: clientMeta.cid,
                 clientKey,
                 payload: data,
-                time: new Date().toLocaleString()
+                time: app.formatDateTime(new Date())
               });
             }
             return;
@@ -667,29 +696,11 @@ module.exports = app => {
                 cid: clientMeta.cid,
                 clientKey,
                 payload: data,
-                time: new Date().toLocaleString()
+                time: app.formatDateTime(new Date())
               });
             }
             return;
           }
-
-          // 3、应答消息 code === "1"：只处理回执，【不修改设备状态、不刷新心跳、不查库】
-          // if (data.code === '1') {
-          //   if (data.msgId) {
-          //     app.handleDeviceReply(data.msgId, data);
-          //   }
-          //   app.logger.info(`[设备应答回执] SN:${clientMeta.sn} msgId:${data.msgId}`);
-          //   if (app.io && app.io.of('/')) {
-          //     app.io.of('/').emit('deviceData', {
-          //       sn: clientMeta.sn,
-          //       cid: clientMeta.cid,
-          //       clientKey,
-          //       payload: data,
-          //       time: new Date().toLocaleString()
-          //     });
-          //   }
-          //   return;
-          // }
 
           // 其余所有JSON报文：原样透传
           if (app.io && app.io.of('/')) {
@@ -698,7 +709,7 @@ module.exports = app => {
               cid: clientMeta.cid,
               clientKey,
               payload: data,
-              time: new Date().toLocaleString()
+              time: app.formatDateTime(new Date())
             });
           }
           return;
@@ -763,7 +774,7 @@ module.exports = app => {
     // 每分钟执行一次离线判断，超时3分钟
     if (app.tcpCleanTimer) clearInterval(app.tcpCleanTimer);
     app.tcpCleanTimer = setInterval(() => {
-      const now = Date.now();
+      const now = app.formatDateTime(new Date());
       const expire = now - 3 * 60 * 1000;
       app.logger.info('======开始60s定时校验设备离线状态=======');
       // ======================【新增3】定时主动清理已销毁残留socket ======================

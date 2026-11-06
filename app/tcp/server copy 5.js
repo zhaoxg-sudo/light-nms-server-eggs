@@ -37,7 +37,7 @@ module.exports = app => {
         sn: dev.sn,
         cid: dev.cid,
         status: newStatus,
-        time: new Date().toLocaleString()
+        time: app.formatDateTime(new Date())
       });
       app.logger.info(`[设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
     }
@@ -49,7 +49,7 @@ module.exports = app => {
         sn: meta.sn,
         cid: meta.cid,
         status: newStatus,
-        time: new Date().toLocaleString()
+        time: app.formatDateTime(new Date())
       });
       app.logger.info(`[GPS通道状态变更] SN:${meta.sn} CID:${meta.cid} -> ${newStatus}`);
     }
@@ -274,7 +274,7 @@ app.getGpsChannelList = function () {
               lat: gpsInfo.lat,
               lng: gpsInfo.lng,
               status: gpsInfo.status,
-              time: new Date().toLocaleString()
+              time: app.formatDateTime(new Date())
             });
           }
           return;
@@ -312,7 +312,7 @@ app.getGpsChannelList = function () {
               cid: clientMeta.cid,
               clientKey,
               payload: data,
-              time: new Date().toLocaleString()
+              time: app.formatDateTime(new Date())
             });
           }
           return;
