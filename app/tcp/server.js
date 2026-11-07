@@ -143,40 +143,6 @@ module.exports = app => {
         devType,
         tenantName
       ]);
-  
-      await pool.query(`
-        INSERT INTO power_alarm_history (
-          alarmid,
-          alarmstation,
-          alarmmudid,
-          alarmreceivedtime,
-          alarmfiredtime,
-          alarmdetail,
-          alarmreason,
-          alarmlevel,
-          alarmconfirmedflag,
-          alarmconfirmedtime,
-          alarmconfirmedinfo,
-          alarmsourceip,
-          alarmaddition,
-          alarmdtusn
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      `, [
-        alarmid,
-        catalogid,
-        '',
-        nowStr,
-        nowStr,
-        alarmDetailText,
-        'DTU上报掉电信号',
-        '1',
-        '0',
-        '',
-        '',
-        publicIp,
-        '',
-        devSn
-      ]);
       app.logger.info(`[告警入库] SN:${devSn} POWER_OFF alarmid=${alarmid}`);
     } catch (e) {
       app.logger.error(`[告警入库失败] SN:${alarmInfo.sn}`, e);
@@ -211,41 +177,154 @@ module.exports = app => {
     const devSn = alarmInfo.devSn;
     const alarmType = alarmInfo.type;
     try {
-      const resCurrent = await pool.query(`
-        SELECT alarmid FROM power_alarm_current
-        WHERE alarmdtusn = $1 AND alarmdetail = $2
-      `, [devSn, alarmType]);
+        const resCurrent = await pool.query(`
+            SELECT alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime, alarmdetail, alarmreason, alarmlevel,
+                   alarmconfirmedflag, alarmconfirmedtime, alarmconfirmedinfo, alarmsourceip
+            FROM power_alarm_current
+            WHERE alarmdtusn = $1 AND alarmdetail = $2
+        `, [devSn, alarmType]);
 
-      if (resCurrent.rows.length === 0) {
-        app.logger.info(`[告警恢复跳过] SN:${devSn} 无待恢复 ${alarmType} 告警`);
-        return;
-      }
-      const alarmid = resCurrent.rows[0].alarmid;
-      const restoreTime = app.formatDateTime();
+        if (resCurrent.rows.length === 0) {
+            app.logger.info(`[告警恢复跳过] SN:${devSn} 无待恢复 ${alarmType} 告警`);
+            return;
+        }
+        const currRow = resCurrent.rows[0];
+        const alarmid = currRow.alarmid;
+        const restoreTime = app.formatDateTime();
+        const restoreInfo = 'DTU上电，掉电告警自动恢复';
+        const newHistoryAlarmId = `${alarmid}`;
 
-      await pool.query(`
-        UPDATE power_alarm_history
-        SET alarmrestoreflag = '1',
-            alarmrestoreinfo = $1,
-            alarmaddition = $2
-        WHERE alarmid = $3
-      `, [
-        'DTU上电，掉电告警自动恢复',
-        `恢复时间：${restoreTime}`,
-        alarmid
-      ]);
-
-      await pool.query(`
-        DELETE FROM power_alarm_current
-        WHERE alarmid = $1
-      `, [alarmid]);
-
-      app.logger.info(`[告警恢复成功] SN:${devSn}, alarmid:${alarmid}, 恢复时间:${restoreTime}`);
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            await client.query(`
+                INSERT INTO power_alarm_history (
+                    alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime,
+                    alarmdetail, alarmreason, alarmlevel, alarmconfirmedflag, alarmconfirmedtime,
+                    alarmconfirmedinfo, alarmrestoreflag, alarmrestoreinfo, alarmsourceip, alarmaddition
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            `, [
+                newHistoryAlarmId,
+                currRow.alarmstation,
+                currRow.alarmmudid,
+                currRow.alarmreceivedtime,
+                currRow.alarmfiredtime,
+                currRow.alarmdetail,
+                currRow.alarmreason,
+                currRow.alarmlevel,
+                currRow.alarmconfirmedflag,
+                currRow.alarmconfirmedtime,
+                currRow.alarmconfirmedinfo, // ✅ 复制当前告警的确认信息到这条恢复历史记录
+                true,
+                restoreInfo,
+                currRow.alarmsourceip,
+                `恢复时间：${restoreTime}`
+            ]);
+            await client.query(`DELETE FROM power_alarm_current WHERE alarmid = $1`, [alarmid]);
+            await client.query('COMMIT');
+            app.logger.info(`[告警恢复成功] SN:${devSn}, 原告警alarmid:${alarmid}, confirmInfo:${currRow.alarmconfirmedinfo}, 新增恢复历史id:${newHistoryAlarmId}`);
+        } catch (err) {
+            await client.query('ROLLBACK');
+            app.logger.error(`[告警恢复事务失败] SN:${devSn}`, err);
+        } finally {
+            client.release();
+        }
     } catch (e) {
-      app.logger.error(`[告警恢复入库失败] SN:${devSn}`, e);
+        app.logger.error(`[告警恢复入库失败] SN:${devSn}`, e);
     }
-  };
+};
 
+  // app.writeAlarmClearDB = async function(alarmInfo) {
+  //   const devSn = alarmInfo.devSn;
+  //   const alarmType = alarmInfo.type;
+  //   try {
+  //     const resCurrent = await pool.query(`
+  //       SELECT alarmid FROM power_alarm_current
+  //       WHERE alarmdtusn = $1 AND alarmdetail = $2
+  //     `, [devSn, alarmType]);
+
+  //     if (resCurrent.rows.length === 0) {
+  //       app.logger.info(`[告警恢复跳过] SN:${devSn} 无待恢复 ${alarmType} 告警`);
+  //       return;
+  //     }
+  //     const alarmid = resCurrent.rows[0].alarmid;
+  //     const restoreTime = app.formatDateTime();
+
+  //     await pool.query(`
+  //       UPDATE power_alarm_history
+  //       SET alarmrestoreflag = '1',
+  //           alarmrestoreinfo = $1,
+  //           alarmaddition = $2
+  //       WHERE alarmid = $3
+  //     `, [
+  //       'DTU上电，掉电告警自动恢复',
+  //       `恢复时间：${restoreTime}`,
+  //       alarmid
+  //     ]);
+
+  //     await pool.query(`
+  //       DELETE FROM power_alarm_current
+  //       WHERE alarmid = $1
+  //     `, [alarmid]);
+
+  //     app.logger.info(`[告警恢复成功] SN:${devSn}, alarmid:${alarmid}, 恢复时间:${restoreTime}`);
+  //   } catch (e) {
+  //     app.logger.error(`[告警恢复入库失败] SN:${devSn}`, e);
+  //   }
+  // };
+  // app.writeAlarmClearDB = async function(alarmInfo) {
+  //   try {
+  //     // 1. 查询current表，一次性取出alarmid + 确认相关全部字段
+  //     const resCurrent = await pool.query(`
+  //       SELECT alarmid, alarmconfirmedflag, alarmconfirmedtime, alarmconfirmedinfo
+  //       FROM power_alarm_current
+  //       WHERE alarmmudid = $1 AND alarmdetail = $2
+  //     `, [alarmInfo.cid, alarmInfo.alarmDetail]);
+  
+  //     if (resCurrent.rows.length === 0) {
+  //       app.logger.info(`[告警恢复跳过] cid:${alarmInfo.cid} 无待恢复 ${alarmInfo.alarmDetail} 告警`);
+  //       return;
+  //     }
+  //     const row = resCurrent.rows[0];
+  //     const alarmid = row.alarmid;
+  //     const confirmFlag = row.alarmconfirmedflag || '0';
+  //     const confirmTime = row.alarmconfirmedtime || '';
+  //     const confirmInfo = row.alarmconfirmedinfo || '';
+  //     const restoreTime = app.formatDateTime();
+  //     const restoreInfo = 'DTU上电，掉电告警自动恢复';
+  
+  //     // 事务：更新历史（带上确认信息） + 删除当前告警
+  //     const client = await pool.connect();
+  //     try {
+  //       await client.query('BEGIN');
+  //       // ✅ 重点：同步把确认标识、确认时间、确认信息写入历史告警
+  //       await client.query(`
+  //         UPDATE power_alarm_history
+  //         SET alarmrestoreflag = '1',
+  //             alarmrestoreinfo = $1,
+  //             alarmrestoredtime = $2,
+  //             alarmconfirmedflag = $3,
+  //             alarmconfirmedtime = $4,
+  //             alarmconfirmedinfo = $5
+  //         WHERE alarmid = $6
+  //       `, [restoreInfo, restoreTime, confirmFlag, confirmTime, confirmInfo, alarmid]);
+  
+  //       const delRet = await client.query(`DELETE FROM power_alarm_current WHERE alarmid = $1`, [alarmid]);
+  //       await client.query('COMMIT');
+  //       app.logger.info(`[告警恢复成功] alarmid:${alarmid}, confirmInfo:${confirmInfo}, 删除current行数:${delRet.rowCount}`);
+  //     } catch (e) {
+  //       await client.query('ROLLBACK');
+  //       app.logger.error(`[告警恢复事务失败] alarmid:${alarmid}`, e);
+  //     } finally {
+  //       client.release();
+  //     }
+  //     // websocket推送前端刷新
+  //     app.websocketAlarm({type: 'alarm_clear', alarmid});
+  //   } catch (err) {
+  //     app.logger.error('writeAlarmClearDB error', err);
+  //   }
+  // }
+  
   // ✅【原有保留：设备业务状态变更主动推送，仅在online/offline切换时触发】
   app.emitDeviceStatusChange = function (dev, newStatus) {
     if (app.io && app.io.of('/')) {
@@ -335,13 +414,6 @@ module.exports = app => {
     const nowTs = Date.now()
     for (const [clientKey, gpsMeta] of app.tcpClients.entries()) {
       if (!gpsMeta || gpsMeta.type !== 'gps') continue
-      // let gpsStatus = 'offline'
-      // if (gpsMeta.lastGpsHeart) {
-      //   const heartTs = new Date(gpsMeta.lastGpsHeart).getTime();
-      //   if (!isNaN(heartTs) && (nowTs - heartTs < GPS_EXPIRE_MS)) {
-      //     gpsStatus = 'online'
-      //   }
-      // }
       // 直接返回原字符串，不用二次格式化
       list.push({
         sn: gpsMeta.sn || null,
