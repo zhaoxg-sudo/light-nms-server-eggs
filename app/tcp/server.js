@@ -335,20 +335,20 @@ module.exports = app => {
     const nowTs = Date.now()
     for (const [clientKey, gpsMeta] of app.tcpClients.entries()) {
       if (!gpsMeta || gpsMeta.type !== 'gps') continue
-      let gpsStatus = 'offline'
-      if (gpsMeta.lastGpsHeart) {
-        const heartTs = new Date(gpsMeta.lastGpsHeart).getTime();
-        if (!isNaN(heartTs) && (nowTs - heartTs < GPS_EXPIRE_MS)) {
-          gpsStatus = 'online'
-        }
-      }
+      // let gpsStatus = 'offline'
+      // if (gpsMeta.lastGpsHeart) {
+      //   const heartTs = new Date(gpsMeta.lastGpsHeart).getTime();
+      //   if (!isNaN(heartTs) && (nowTs - heartTs < GPS_EXPIRE_MS)) {
+      //     gpsStatus = 'online'
+      //   }
+      // }
       // 直接返回原字符串，不用二次格式化
       list.push({
         sn: gpsMeta.sn || null,
         cid: gpsMeta.cid || null,
         clientKey,
         publicIp: gpsMeta.publicIp || null,
-        gpsStatus,
+        gpsStatus: gpsMeta.gpsStatus || null,
         lastGpsHeart: gpsMeta.lastGpsHeart,
         lat: typeof gpsMeta.lat !== 'undefined' ? gpsMeta.lat : null,
         lng: typeof gpsMeta.lng !== 'undefined' ? gpsMeta.lng : null,
