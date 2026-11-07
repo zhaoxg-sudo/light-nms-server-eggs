@@ -329,24 +329,27 @@ module.exports = app => {
     return list
   }
   // GPS独立列表接口：遍历所有GPS通道tcpClients，不依赖deviceMap
-  // 
   app.getGpsChannelList = function () {
     const GPS_EXPIRE_MS = 3 * 60 * 1000;
     const list = []
+    const nowTs = Date.now()
     for (const [clientKey, gpsMeta] of app.tcpClients.entries()) {
       if (!gpsMeta || gpsMeta.type !== 'gps') continue
-      const now = app.formatDateTime(new Date())
       let gpsStatus = 'offline'
-      if (gpsMeta.lastGpsHeart && (now - gpsMeta.lastGpsHeart < GPS_EXPIRE_MS)) {
-        gpsStatus = gpsMeta.gpsStatus || 'online'
+      if (gpsMeta.lastGpsHeart) {
+        const heartTs = new Date(gpsMeta.lastGpsHeart).getTime();
+        if (!isNaN(heartTs) && (nowTs - heartTs < GPS_EXPIRE_MS)) {
+          gpsStatus = 'online'
+        }
       }
+      // 直接返回原字符串，不用二次格式化
       list.push({
         sn: gpsMeta.sn || null,
         cid: gpsMeta.cid || null,
         clientKey,
         publicIp: gpsMeta.publicIp || null,
         gpsStatus,
-        lastGpsHeart: gpsMeta.lastGpsHeart || null,
+        lastGpsHeart: gpsMeta.lastGpsHeart,
         lat: typeof gpsMeta.lat !== 'undefined' ? gpsMeta.lat : null,
         lng: typeof gpsMeta.lng !== 'undefined' ? gpsMeta.lng : null,
         gpsValid: typeof gpsMeta.gpsValid !== 'undefined' ? gpsMeta.gpsValid : false
@@ -774,7 +777,7 @@ module.exports = app => {
     // 每分钟执行一次离线判断，超时3分钟
     if (app.tcpCleanTimer) clearInterval(app.tcpCleanTimer);
     app.tcpCleanTimer = setInterval(() => {
-      const now = app.formatDateTime(new Date());
+      const now = new Date();
       const expire = now - 3 * 60 * 1000;
       app.logger.info('======开始60s定时校验设备离线状态=======');
       // ======================【新增3】定时主动清理已销毁残留socket ======================
@@ -788,7 +791,9 @@ module.exports = app => {
       // GPS通道心跳超时检测（只遍历tcpClients）
       for (const [ck, meta] of app.tcpClients.entries()) {
         if (meta.type === 'gps') {
-          const gpsExpire = meta.lastGpsHeart < expire;
+          // const gpsExpire = meta.lastGpsHeart < expire;
+          const heartTs = new Date(meta.lastGpsHeart).getTime(); // ✏️【MODIFIED】字符串转时间戳
+          const gpsExpire = !isNaN(heartTs) && heartTs < expire; // ✏️【MODIFIED】增加isNaN容错
           if (gpsExpire) {
             app.logger.warn(`[GPS通道心跳超时] clientKey:${ck}, SN:${meta.sn}`);
             if(meta.gpsStatus === 'online'){
@@ -808,13 +813,17 @@ module.exports = app => {
         if (!dev) continue;
     
         // 业务心跳超时判断
-        const busExpire = dev.lastBusinessHeart < expire;
+        // const busExpire = dev.lastBusinessHeart < expire;
+        const busHeartTs = new Date(dev.lastBusinessHeart).getTime(); // ✏️【MODIFIED】字符串转时间戳
+        const busExpire = !isNaN(busHeartTs) && busHeartTs < expire; // ✏️【MODIFIED】增加isNaN容错
     
         // GPS超时判断：取dev.gpsChannel对应的tcpMeta
         let gpsExpire = true;
         if(dev.gpsChannel && app.tcpClients.has(dev.gpsChannel)){
           const gpsMeta = app.tcpClients.get(dev.gpsChannel);
-          gpsExpire = gpsMeta.lastGpsHeart < expire;
+          // gpsExpire = gpsMeta.lastGpsHeart < expire;
+          const gpsHeartTs = new Date(gpsMeta.lastGpsHeart).getTime(); // ✏️【MODIFIED】字符串转时间戳
+          gpsExpire = !isNaN(gpsHeartTs) && gpsHeartTs < expire; // ✏️【MODIFIED】增加isNaN容错
         }
     
         app.logger.info(`[设备状态校验] SN:${sn} CID:${dev.cid} 业务超时:${busExpire}, GPS超时:${gpsExpire}`);
