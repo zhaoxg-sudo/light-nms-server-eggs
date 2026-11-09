@@ -1,6 +1,9 @@
 const net = require('net');
 const { Pool, Client } = require('pg')
 const pool = require('../pgpool');
+
+// 全局锁Map，放在文件最顶部
+const alarmRestoreLock = new Map();
 // GPS NMEA定位解析
 function autoParse(buf) {
   const str = buf.toString().trim();
@@ -179,7 +182,7 @@ module.exports = app => {
     try {
         const resCurrent = await pool.query(`
             SELECT alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime, alarmdetail, alarmreason, alarmlevel,
-                   alarmconfirmedflag, alarmconfirmedtime, alarmconfirmedinfo, alarmsourceip
+                   alarmconfirmedflag, alarmconfirmedtime, alarmconfirmedinfo, alarmsourceip, alarmdtusn, alarmdevtype, tenantname
             FROM power_alarm_current
             WHERE alarmdtusn = $1 AND alarmdetail = $2
         `, [devSn, alarmType])
@@ -191,7 +194,7 @@ module.exports = app => {
         const currRow = resCurrent.rows[0]
         const alarmid = currRow.alarmid
         const restoreTime = app.formatDateTime()
-        const restoreInfo = 'DTU上电，掉电告警自动恢复'
+        const restoreInfo = 'DTU上电，掉电告警恢复，' + restoreTime
         const newHistoryAlarmId = `${alarmid}`
 
         const client = await pool.connect()
@@ -201,8 +204,9 @@ module.exports = app => {
                 INSERT INTO power_alarm_history (
                     alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime,
                     alarmdetail, alarmreason, alarmlevel, alarmconfirmedflag, alarmconfirmedtime,
-                    alarmconfirmedinfo, alarmrestoreflag, alarmrestoreinfo, alarmsourceip, alarmaddition
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    alarmconfirmedinfo, alarmrestoreflag, alarmrestoreinfo, alarmsourceip, alarmaddition, alarmdtusn,
+                    alarmdevtype, tenantname
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             `, [
                 newHistoryAlarmId,
                 currRow.alarmstation,
@@ -218,7 +222,10 @@ module.exports = app => {
                 true,
                 restoreInfo,
                 currRow.alarmsourceip,
-                `恢复时间：${restoreTime}`
+                `恢复时间：${restoreTime}`,
+                currRow.alarmdtusn,
+                currRow.alarmdevtype,
+                currRow.tenantname
             ]);
             await client.query(`DELETE FROM power_alarm_current WHERE alarmid = $1`, [alarmid])
             await client.query('COMMIT')
@@ -255,7 +262,7 @@ module.exports = app => {
           status: newStatus,
           time: app.formatDateTime(new Date())
         });
-        app.logger.info(`[设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
+        app.logger.info(`[emitPoweroffStatusChange:设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
       }
     }
   // ==========【新增】GPS通道状态推送，格式完全对齐上面 ==========
@@ -446,19 +453,43 @@ module.exports = app => {
                 devOffline: false
               }
             });
+          } else {
+            app.logger.warn(`[DTU上电重复，跳过] SN:${devSn}`);
           }
           const devInfo = app.deviceMap.get(devSn);
           devInfo.lastOnline = app.formatDateTime(new Date());
           // ========= 上电，POWER_OFF告警恢复 start =========
-          if (devInfo.alarmStatus.dtuPowerOff === true) {
-            devInfo.alarmStatus.dtuPowerOff = false;
-            app.logger.info(`[上电恢复] SN:${devSn} 清除掉电POWER_OFF告警`);
-            const alarmInfo = {
-              devSn: devSn,
-              cid: devInfo.cid || "",
-              type: "POWER_OFF",
-            };
-            await app.writeAlarmClearDB(alarmInfo);
+          const lockKey = `${devSn}_POWER_OFF`;
+          if (alarmRestoreLock.has(lockKey)) {
+            app.logger.info(`[上电恢复] SN:${devSn} 正在恢复中，跳过本次并发触发`);
+          } else {
+            alarmRestoreLock.set(lockKey, true);
+            try {
+              const resCurrent = await pool.query(`
+                SELECT 1 FROM power_alarm_current
+                WHERE alarmdtusn = $1 AND alarmdetail = $2
+              `, [devSn, 'POWER_OFF']);
+
+              if (resCurrent.rows.length > 0) {
+                app.logger.info(`[上电恢复] SN:${devSn} 数据库存在POWER_OFF告警，执行恢复`);
+                const alarmInfo = {
+                  devSn: devSn,
+                  cid: "",
+                  type: "POWER_OFF",
+                };
+                await app.writeAlarmClearDB(alarmInfo);
+                app.logger.info(`[上电恢复] SN:${devSn} POWER_OFF告警恢复完成`);
+              } else {
+                app.logger.info(`[上电恢复] SN:${devSn} 无待恢复POWER_OFF告警`);
+              }
+            } catch (e) {
+              app.logger.error(`[上电恢复异常] SN:${devSn}`, e);
+            } finally {
+              // 2秒后释放锁，避免长期卡死
+              setTimeout(() => {
+                alarmRestoreLock.delete(lockKey);
+              }, 2000);
+            }
           }
           // ========= 上电，POWER_OFF告警恢复 end =========
           for (const [ck, meta] of app.tcpClients.entries()) {
@@ -484,7 +515,7 @@ module.exports = app => {
             alarmId: `${alarmSn}_POWER_OFF`,
             sn: alarmSn,
             cid: "",
-            devType: "",
+            devType: "直流柜",
             tenantName: "",
             alarmType: "POWER_OFF",
             alarmDetail: "设备断电",
@@ -500,6 +531,7 @@ module.exports = app => {
           if (app.deviceMap.has(alarmSn)) {
             const dev = app.deviceMap.get(alarmSn);
             alarmInfo.cid = dev.cid || "";
+            alarmInfo.sn = alarmSn || "";
             alarmInfo.devType = dev.protocoltype || "";
             alarmInfo.tenantName = dev.tenantname || "";
 
@@ -510,7 +542,6 @@ module.exports = app => {
               (async () => {
                 await Promise.all([
                   app.writeAlarmToCurrentDB(alarmInfo),
-                  // app.writeAlarmToHistoryDB(alarmInfo)
                 ]);
                 app.websocketAlarm(alarmInfo, clientKey);
               })();
