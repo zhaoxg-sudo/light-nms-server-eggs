@@ -48,43 +48,6 @@ module.exports = app => {
     return `${y}-${m}-${day} ${h}:${mi}:${s}`;
   };
 
-  // 写入当前告警表 power_alarm_current
-  // app.writeAlarmToCurrentDB = async function (alarmInfo) {
-  //   const sql = `
-  //     INSERT INTO power_alarm_current (
-  //       alarmid, alarmstation, alarmmudid, alarmreceivedtime, alarmfiredtime,
-  //       alarmdetail, alarmreason, alarmlevel, alarmconfirmedflag, alarmconfirmedtime,
-  //       alarmconfirmedinfo, alarmrestoreflag, alarmrestoreinfo, alarmsourceip,
-  //       alarmaddition, alarmdtusn, alarmdevtype, tenantname
-  //     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-  //     ON CONFLICT (alarmid) DO NOTHING;
-  //   `;
-  //   const params = [
-  //     alarmInfo.alarmId,
-  //     alarmInfo.cid || '',
-  //     alarmInfo.sn || '',
-  //     alarmInfo.time || '',
-  //     alarmInfo.fireTime || alarmInfo.time || '',
-  //     alarmInfo.alarmDetail || '',
-  //     alarmInfo.alarmReason || '',
-  //     alarmInfo.alarmLevel || '',
-  //     alarmInfo.confirmFlag || '0',
-  //     alarmInfo.confirmTime || '',
-  //     alarmInfo.confirmInfo || '',
-  //     alarmInfo.restoreFlag || '0',
-  //     alarmInfo.restoreInfo || '',
-  //     alarmInfo.sourceIp || '',
-  //     alarmInfo.addition || '',
-  //     alarmInfo.sn || '',
-  //     alarmInfo.devType || '',
-  //     alarmInfo.tenantName || ''
-  //   ];
-  //   try {
-  //     await pool.query(sql, params);
-  //   } catch (err) {
-  //     app.logger.error(`[writeAlarmToCurrentDB] alarmId:${alarmInfo.alarmId}`, err.message);
-  //   }
-  // };
   app.writeAlarmToCurrentDB = async function(alarmInfo) {
     try {
       const devSn = alarmInfo.sn;
@@ -254,7 +217,7 @@ module.exports = app => {
     }
   }
     // ✅【原有保留：设备业务状态变更主动推送，仅在4G dtu power_off切换时触发】
-    app.emitPoweroffStatusChange = function (dev, newStatus) {
+    app.emitPoweroff = function (dev, newStatus) {
       if (app.io && app.io.of('/')) {
         app.io.of('/').emit('dtupoweroff', {
           sn: dev.sn,
@@ -262,8 +225,28 @@ module.exports = app => {
           status: newStatus,
           time: app.formatDateTime(new Date())
         });
-        app.logger.info(`[emitPoweroffStatusChange:设备状态变更] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
+        app.logger.info(`[emitPoweroff:设备断电] SN:${dev.sn} CID:${dev.cid} -> ${newStatus}`);
       }
+    }
+    app.emitPoweron = function (devSn, newStatus) {
+      if (app.io && app.io.of('/')) {
+        app.io.of('/').emit('dtupoweroff', {
+          sn: devSn,
+          status: newStatus,
+          time: app.formatDateTime(new Date())
+        });
+        app.logger.info(`[emitPoweron:设备上电] SN:${devSn}-> ${newStatus}`);
+      }
+      // ✏️ 上电时，清理该SN残留的旧GPS通道记录
+      // for (const [k, m] of app.tcpClients.entries()) {
+      //   if (m.type === 'gps' && m.sn === devSn) {
+      //     app.logger.info(`[上电清理残留GPS] clientKey:${k} SN:${devSn}`);
+      //     if(m.socket && !m.socket.destroyed){
+      //         m.socket.destroy();
+      //     }
+      //     app.tcpClients.delete(k);
+      //   }
+      // }
     }
   // ==========【新增】GPS通道状态推送，格式完全对齐上面 ==========
   app.emitGpsChannelStatusChange = function (meta, newStatus) {
@@ -271,6 +254,7 @@ module.exports = app => {
       app.io.of('/').emit('gpschannelonoffline', {
         sn: meta.sn,
         cid: meta.cid,
+        clientKey: meta.clientKey, // ✅ 新增
         status: newStatus,
         time: app.formatDateTime(new Date())
       });
@@ -454,6 +438,12 @@ module.exports = app => {
               }
             });
           } else {
+            // 
+            // 置断电告警为false
+            const devSet = app.deviceMap.get(devSn);
+            devSet.alarmStatus.dtuPowerOff = false;
+            // 置deviceMap的GPSlastGpsHeart
+            devSet.lastGpsHeart = app.formatDateTime(new Date())
             app.logger.warn(`[DTU上电重复，跳过] SN:${devSn}`);
           }
           const devInfo = app.deviceMap.get(devSn);
@@ -478,6 +468,7 @@ module.exports = app => {
                   type: "POWER_OFF",
                 };
                 await app.writeAlarmClearDB(alarmInfo);
+                app.emitPoweron(devSn, 'poweron');
                 app.logger.info(`[上电恢复] SN:${devSn} POWER_OFF告警恢复完成`);
               } else {
                 app.logger.info(`[上电恢复] SN:${devSn} 无待恢复POWER_OFF告警`);
@@ -538,16 +529,23 @@ module.exports = app => {
             // ✅ 使用 alarmStatus 标记控制防重复告警
             if (!dev.alarmStatus.dtuPowerOff) {
               dev.alarmStatus.dtuPowerOff = true;
-              app.emitPoweroffStatusChange(dev, 'poweroff');
+              app.emitPoweroff(dev, 'poweroff');
               (async () => {
                 await Promise.all([
                   app.writeAlarmToCurrentDB(alarmInfo),
                 ]);
                 app.websocketAlarm(alarmInfo, clientKey);
               })();
+            } else {
+              app.logger.warn(`[断电告警异常1] SN:${alarmSn} 收到power_off,但是断电告警状态却为true`);
+              app.logger.warn(`[断电告警异常11] SN:${alarmSn} 收到power_off,但是断电告警状态却为true`);
+              app.logger.warn(`[断电告警异常111] SN:${alarmSn} 收到power_off,但是断电告警状态却为true`);
             }
           } else {
-            app.logger.warn(`[断电告警] SN:${alarmSn} 还未注册到deviceMap，暂不处理状态`);
+            app.logger.warn(`[断电告警异常] SN:${alarmSn} 还未注册到deviceMap，暂不处理状态`);
+            for (const [sn, dev] of app.deviceMap.entries()) {
+              app.logger.warn(`[断电告警异常deviceMap打印] SN:${dev.sn} 还未注册到deviceMap，暂不处理状态`);
+            }
           }
           return;
         }
@@ -564,7 +562,15 @@ module.exports = app => {
             app.logger.warn(`[GPS通道] 报文有GPS数据，但尚未绑定SN，clientKey:${clientKey}`);
             return;
           }
-        
+
+          // ✏️【MODIFIED】新GPS连接上来，删除同SN其他旧GPS连接
+          for (const [oldClientKey, meta] of app.tcpClients.entries()) {
+            if (meta.type === 'gps' && meta.sn === recvSn && oldClientKey !== clientKey) {
+                app.tcpClients.delete(oldClientKey);
+                app.logger.info(`[GPS旧连接清理] SN:${recvSn} 删除旧clientKey:${oldClientKey}`);
+            }
+          }
+              
           try {
             const res = await pool.query(
               'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
