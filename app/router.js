@@ -38,6 +38,8 @@ module.exports = app => {
   router.post('/alarm/history/update', controller.alarm.posthistoryalarmupdate);
   router.post('/alarm/firedcheck', controller.alarm.postalarmfiredcheck);
   router.post('/alarm/firedinsert', controller.alarm.postalarmfiredinsert);
+  router.post('/alarm/currentAlarmPageByID', controller.alarm.currentAlarmPageByID);
+  router.post('/alarm/historyAlarmPageByID', controller.alarm.historyAlarmPageByID);
   router.get('/getallhistoryalarm', controller.alarm.getallhistoryalarm);
   router.get('/data/getalldatatotol', controller.data.getalldatatotol);
   router.post('/data/postdatapage', controller.data.postdatapage);

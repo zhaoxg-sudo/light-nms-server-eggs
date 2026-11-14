@@ -2,7 +2,7 @@
 
 const Controller = require('egg').Controller;
 const { Pool, Client } = require('pg')
-
+const pool = require('../pgpool');
 
 class HomeController extends Controller {
   // alarm fired insert
@@ -417,6 +417,93 @@ class HomeController extends Controller {
       const { ctx } = this;
       //ctx.body = 'hi, egg';
       ctx.body = insertErr
+    }
+  
+    async  currentAlarmPageByID() {
+      const { station, pageIndex = 1, pageSize = 10 } = this.ctx.request.body
+      console.log('currentAlarmPageByID', this.ctx.request.body)
+      const page = Number(pageIndex)
+      const size = Number(pageSize)
+      const offset = (page - 1) * size
+
+      let sqlWhere = ' WHERE 1=1 '
+      let params = []
+      let idx = 1
+
+      if (station && station.trim() !== '') {
+        sqlWhere += ` AND alarmstation = $${idx} `
+        params.push(station.trim())
+        idx++
+      }
+
+      const countSql = `SELECT COUNT(*) AS total FROM power_alarm_current ${sqlWhere}`
+      const countRes = await pool.query(countSql, params)
+      const total = Number(countRes.rows[0].total)
+
+      const listSql = `
+        SELECT * FROM power_alarm_current
+        ${sqlWhere}
+        ORDER BY alarmfiredtime DESC
+        LIMIT $${idx} OFFSET $${idx + 1}
+      `
+      const listRes = await pool.query(listSql, [...params, size, offset])
+
+      this.ctx.body = {
+        success: true,
+        data: listRes.rows,
+        total
+      }
+    }
+
+    /**
+     * historyAlarmPageByID
+     * POST /alarm/historyAlarmPageByID
+     * 根据站点ID(alarmmudid) + 时间范围 分页查询 power_alarm_history
+     */
+    async  historyAlarmPageByID() {
+      const { station, BeginTime, EndTime, pageIndex = 1, pageSize = 10 } = this.ctx.request.body
+      console.log('historyAlarmPageByID', this.ctx.request.body)
+      const page = Number(pageIndex)
+      const size = Number(pageSize)
+      const offset = (page - 1) * size
+
+      let sqlWhere = ' WHERE 1=1 '
+      let params = []
+      let idx = 1
+
+      if (station && station.trim() !== '') {
+        sqlWhere += ` AND alarmstation = $${idx} `
+        params.push(station.trim())
+        idx++
+      }
+      if (BeginTime) {
+        sqlWhere += ` AND alarmfiredtime >= $${idx} `
+        params.push(BeginTime)
+        idx++
+      }
+      if (EndTime) {
+        sqlWhere += ` AND alarmfiredtime <= $${idx} `
+        params.push(EndTime)
+        idx++
+      }
+
+      const countSql = `SELECT COUNT(*) AS total FROM power_alarm_history ${sqlWhere}`
+      const countRes = await pool.query(countSql, params)
+      const total = Number(countRes.rows[0].total)
+
+      const listSql = `
+        SELECT * FROM power_alarm_history
+        ${sqlWhere}
+        ORDER BY alarmfiredtime DESC
+        LIMIT $${idx} OFFSET $${idx + 1}
+      `
+      const listRes = await pool.query(listSql, [...params, size, offset])
+
+      this.ctx.body = {
+        success: true,
+        data: listRes.rows,
+        total
+      }
     }
 }
 module.exports = HomeController;
