@@ -640,17 +640,55 @@ module.exports = app => {
             app.handleDeviceReply(data.msgId, data);
           }
          
+          // // 1、heart 心跳：更新心跳时间 + CID校验、变更设备状态（心跳不带msgId）
           // 1、heart 心跳：更新心跳时间 + CID校验、变更设备状态（心跳不带msgId）
           if (data.cmd === 'heart') {
             clientMeta.type = 'business';
+            // ========== 重点修改：删除 clientMeta.sn = data.sn; ==========
+            // 心跳包 payload 没有sn，sn来自连接注册时提前绑定到 clientMeta.sn
+            if (!clientMeta.sn) {
+              app.logger.warn(`[业务心跳] 连接未注册，clientMeta无sn，丢弃心跳包, clientKey:${clientKey}`);
+              return;
+            }
+          
             if (data.id) {
               const incomingCid = data.id;
               clientMeta.cid = incomingCid;
-              if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
-                const dev = app.deviceMap.get(clientMeta.sn);
-                dev.businessChannel = clientKey;
-                dev.lastBusinessHeart = app.formatDateTime(new Date());
-
+          
+              if (clientMeta.sn) {
+                let dev;
+                if (!app.deviceMap.has(clientMeta.sn)) {
+                  dev = {
+                    sn: clientMeta.sn,
+                    cid: incomingCid,
+                    businessChannel: clientKey,
+                    lastBusinessHeart: app.formatDateTime(new Date()),
+                    status: 'unknown',
+                    alarmStatus: {
+                      dtuPowerOff: false,
+                      dtuOffline: false,
+                      devOffline: false
+                    },
+                    gpsChannel: null,
+                    lastGpsHeart: 0,
+                    protocoltype: '',
+                    tenantname: ''
+                  };
+                  app.deviceMap.set(clientMeta.sn, dev);
+                  app.logger.info(`[新设备心跳，自动创建设备实体] SN:${clientMeta.sn}`);
+                } else {
+                  dev = app.deviceMap.get(clientMeta.sn);
+                  dev.businessChannel = clientKey;
+                  dev.lastBusinessHeart = app.formatDateTime(new Date());
+                  if (!dev.alarmStatus) {
+                    dev.alarmStatus = {
+                      dtuPowerOff: false,
+                      dtuOffline: false,
+                      devOffline: false
+                    };
+                  }
+                }
+          
                 try {
                   const res = await pool.query(
                     'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
@@ -673,22 +711,17 @@ module.exports = app => {
                       }
                     }
                   } else {
-                    // ========== ✅【标注修改开始】==========
-                    // 数据库查不到这条DTU配置，标记unknown
                     app.logger.warn(`[业务通道未知SN] SN:${clientMeta.sn} 不在power_station_tree`);
                     if (dev.status !== 'unknown') {
                       dev.status = 'unknown';
                       app.emitDeviceStatusChange(dev, 'unknown');
                     }
-                    // 兜底：用心跳上报的id赋值给dev.cid，仅前端大屏展示点位ID，**不改变校验逻辑**
                     dev.cid = incomingCid;
-                    // ========== ✅【标注修改结束】==========
                   }
                 } catch (dbErr) {
                   app.logger.error(`[业务心跳查询库失败] SN:${clientMeta.sn}`, dbErr);
                 }
-
-                // 同IP通道同步cid
+          
                 for (const [ck, meta] of app.tcpClients.entries()) {
                   if (meta.publicIp === publicIp) {
                     meta.cid = incomingCid;
@@ -696,7 +729,7 @@ module.exports = app => {
                 }
               }
             }
-
+          
             if (app.io && app.io.of('/')) {
               app.io.of('/').emit('deviceData', {
                 sn: clientMeta.sn,
@@ -708,6 +741,74 @@ module.exports = app => {
             }
             return;
           }
+          
+          // if (data.cmd === 'heart') {
+          //   clientMeta.type = 'business';
+          //   if (data.id) {
+          //     const incomingCid = data.id;
+          //     clientMeta.cid = incomingCid;
+          //     if (clientMeta.sn && app.deviceMap.has(clientMeta.sn)) {
+          //       const dev = app.deviceMap.get(clientMeta.sn);
+          //       dev.businessChannel = clientKey;
+          //       dev.lastBusinessHeart = app.formatDateTime(new Date());
+
+          //       try {
+          //         const res = await pool.query(
+          //           'SELECT dtusn, catalogid FROM power_station_tree WHERE dtusn = $1 LIMIT 1',
+          //           [clientMeta.sn]
+          //         );
+          //         if (res.rows.length > 0) {
+          //           const dbCid = res.rows[0].catalogid;
+          //           dev.cid = dbCid;
+          //           if (incomingCid !== dbCid) {
+          //             app.logger.warn(`[CID不匹配告警] SN:${clientMeta.sn} 库CID:${dbCid} 业务上报CID:${incomingCid}`);
+          //             if (dev.status !== 'unknown') {
+          //               dev.status = 'unknown';
+          //               app.emitDeviceStatusChange(dev, 'unknown');
+          //             }
+          //           } else {
+          //             if (dev.status !== 'online') {
+          //               dev.status = 'online';
+          //               app.logger.info(`[heart的CID匹配成功] SN:${clientMeta.sn} 库CID:${dbCid} 业务上报CID:${incomingCid}`);
+          //               app.emitDeviceStatusChange(dev, 'online');
+          //             }
+          //           }
+          //         } else {
+          //           // ========== ✅【标注修改开始】==========
+          //           // 数据库查不到这条DTU配置，标记unknown
+          //           app.logger.warn(`[业务通道未知SN] SN:${clientMeta.sn} 不在power_station_tree`);
+          //           if (dev.status !== 'unknown') {
+          //             dev.status = 'unknown';
+          //             app.emitDeviceStatusChange(dev, 'unknown');
+          //           }
+          //           // 兜底：用心跳上报的id赋值给dev.cid，仅前端大屏展示点位ID，**不改变校验逻辑**
+          //           dev.cid = incomingCid;
+          //           // ========== ✅【标注修改结束】==========
+          //         }
+          //       } catch (dbErr) {
+          //         app.logger.error(`[业务心跳查询库失败] SN:${clientMeta.sn}`, dbErr);
+          //       }
+
+          //       // 同IP通道同步cid
+          //       for (const [ck, meta] of app.tcpClients.entries()) {
+          //         if (meta.publicIp === publicIp) {
+          //           meta.cid = incomingCid;
+          //         }
+          //       }
+          //     }
+          //   }
+
+          //   if (app.io && app.io.of('/')) {
+          //     app.io.of('/').emit('deviceData', {
+          //       sn: clientMeta.sn,
+          //       cid: clientMeta.cid,
+          //       clientKey,
+          //       payload: data,
+          //       time: app.formatDateTime(new Date())
+          //     });
+          //   }
+          //   return;
+          // }
 
           // 2、alarm 告警消息：仅日志+透传，不处理回执、不刷新心跳、不修改状态
           if (data.cmd === 'alarm') {
